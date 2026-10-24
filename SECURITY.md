@@ -1,0 +1,30 @@
+# 安全说明
+
+本仓库是课程演示项目，不是可直接暴露到公网的生产系统。
+
+## 当前演示配置
+
+- admin 和 team 使用公开的固定演示密码。
+- 密码以演示数据形式保存在代码中，会话保存在后端进程内存中。
+- Bearer Token 保存在浏览器 localStorage，后端重启后会话失效。
+- CORS 为本地前后端分离调试开放，服务默认仅监听 127.0.0.1。
+- Fabric 使用 test-network 证书；证书与私钥不包含在本仓库中。
+
+## 公开部署前必须完成
+
+1. 删除固定演示账号，接入学校统一身份认证或至少使用 bcrypt/Argon2 哈希密码。
+2. 将会话放入受保护的服务端存储，改用 Secure、HttpOnly、SameSite Cookie。
+3. 限制 CORS 来源，并在反向代理层启用 HTTPS、安全响应头、请求大小限制与速率限制。
+4. 将 Fabric 身份证书和私钥放入密钥管理系统，不通过仓库、镜像或环境日志分发。
+5. 增加审计告警、备份恢复、依赖漏洞扫描与接口级自动化测试。
+6. 核对第三方图片、视频与品牌素材的公开使用许可。
+
+## 敏感信息
+
+提交前运行：
+
+    git status --short
+    rg -n "BEGIN.*PRIVATE KEY|api[_-]?key|secret|password" . \
+      -g '!chaincode/vendor/**' -g '!frontend/node_modules/**'
+
+不要提交 .env、Fabric organizations 目录、私钥、真实账号、学号、手机号或生产数据。

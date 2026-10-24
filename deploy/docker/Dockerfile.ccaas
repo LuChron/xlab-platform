@@ -1,0 +1,14 @@
+# X-Lab 链码外部构建镜像（CCAAS）
+FROM hyperledger/fabric-ccenv:2.4 AS build
+WORKDIR /chaincode
+COPY go.mod go.sum ./
+COPY vendor ./vendor
+COPY *.go ./
+RUN GO111MODULE=on GOFLAGS=-mod=vendor CGO_ENABLED=0 \
+    go build -buildvcs=false -o /chaincode/chaincode .
+
+FROM hyperledger/fabric-baseos:2.4
+ENV CORE_CHAINCODE_ID_NAME=xlab:1.0
+WORKDIR /root
+COPY --from=build /chaincode/chaincode /root/chaincode
+ENTRYPOINT ["/root/chaincode"]

@@ -1,0 +1,38 @@
+# 依赖与构建产物
+.cache/
+frontend/node_modules/
+frontend/coverage/
+frontend/.vite/
+frontend/.eslintcache
+*.tar.gz
+
+# Go 二进制
+backend/xlab-backend
+backend/xlab-platform-backend
+chaincode/bin/
+*.test
+coverage.out
+
+# 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+*.tmp
+*.swp
+
+# 本地配置与凭据
+.env
+.env.*
+!.env.example
+
+# 设计验收工具的产物（截图与量测报告）
+.taste-skill/
+
+# 链码本地编译产物
+chaincode/chaincode
+
+# 前端构建产物：由 ./deploy/run.sh 或 npm run build 生成
+frontend/dist/
+演示视频素材/page@*.webm
