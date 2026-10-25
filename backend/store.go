@@ -15,6 +15,7 @@ import (
 // 两个实现：
 //   - memoryStore：演示兜底，进程内保存，Fabric 未启动时也能完整走通业务
 //   - fabricStore：真实调用 Fabric Gateway
+//
 // 两者行为与错误语义保持一致，前端无需区分。
 type Store interface {
 	Ledger() (*Ledger, error)
@@ -46,7 +47,7 @@ type Store interface {
 // ActorAware 可选能力：按调用方所属组织切换签名身份。
 // 演示模式没有真实证书，不实现该接口，请求原样使用同一个内存账本。
 type ActorAware interface {
-	For(mspID string) Store
+	For(mspID string) (Store, error)
 }
 
 // HistoryEntry 对象变更历史
@@ -68,7 +69,6 @@ type ApplicationInput struct {
 	StartDate      string   `json:"startDate"`
 	EndDate        string   `json:"endDate"`
 	IdeaSummary    string   `json:"ideaSummary"`
-	IdeaText       string   `json:"ideaText"`
 	Milestone      string   `json:"milestone"`
 }
 
@@ -76,6 +76,7 @@ type ApplicationInput struct {
 type BorrowInput struct {
 	EquipmentID string `json:"equipmentId"`
 	ProjectID   string `json:"projectId"`
+	BorrowerID  string `json:"-"`
 	Borrower    string `json:"borrower"`
 	Purpose     string `json:"purpose"`
 	DueDate     string `json:"dueDate"`
@@ -106,8 +107,8 @@ func pseudoTxID(seed string) string {
 func (m *memoryStore) nextID(prefix string, taken func(string) bool) string {
 	year := time.Now().Format("2006")
 	for {
-		m.seq++
-		id := fmt.Sprintf("%s-%s-%03d", prefix, year, m.seq)
+		(*m.seq)++
+		id := fmt.Sprintf("%s-%s-%03d", prefix, year, *m.seq)
 		if !taken(id) {
 			return id
 		}
@@ -144,14 +145,23 @@ func (m *memoryStore) borrowExists(id string) bool {
 // ---------------- memoryStore ----------------
 
 type memoryStore struct {
-	mu    sync.RWMutex
-	data  *Ledger
-	seq   int
-	actor string
+	mu       *sync.RWMutex
+	data     *Ledger
+	seq      *int
+	actor    string
+	actorMSP string
 }
 
 func newMemoryStore() *memoryStore {
-	return &memoryStore{data: seedDemo(), actor: "Org1MSP/Admin"}
+	return newMemoryStoreWithLedger(seedDemo(), "Org1MSP/Admin", AdminMSP)
+}
+
+func newMemoryStoreWithLedger(data *Ledger, actor, actorMSP string) *memoryStore {
+	seq := 0
+	return &memoryStore{
+		mu: new(sync.RWMutex), data: data, seq: &seq,
+		actor: actor, actorMSP: actorMSP,
+	}
 }
 
 func (m *memoryStore) Mode() string { return "demo" }
@@ -161,9 +171,22 @@ func (m *memoryStore) Chain() (*ChainInfo, error) {
 	return &ChainInfo{Blocks: []Block{}}, nil
 }
 
-// For 演示模式没有真实证书，身份只影响日志里的 actor 字段
-func (m *memoryStore) For(string) Store { return m }
-func (m *memoryStore) Close()       {}
+// For 演示模式没有真实证书，但仍按请求组织记录活动归属。
+func (m *memoryStore) For(mspID string) (Store, error) {
+	actors := map[string]string{
+		AdminMSP: "Org1MSP/Admin",
+		UserMSP:  "Org2MSP/TeamUser",
+	}
+	actor, ok := actors[mspID]
+	if !ok {
+		return nil, fmt.Errorf("未配置的组织 %s", mspID)
+	}
+	return &memoryStore{
+		mu: m.mu, data: m.data, seq: m.seq,
+		actor: actor, actorMSP: mspID,
+	}, nil
+}
+func (m *memoryStore) Close() {}
 
 func (m *memoryStore) Ledger() (*Ledger, error) {
 	m.mu.RLock()
@@ -187,7 +210,7 @@ func (m *memoryStore) Ledger() (*Ledger, error) {
 func (m *memoryStore) log(action, objType, objID, detail string) {
 	m.data.Activities = append([]Activity{{
 		TxID: pseudoTxID(objID + action), Action: action, ObjectType: objType,
-		ObjectID: objID, Actor: m.actor, ActorMSP: AdminMSP, Detail: detail, Timestamp: nowISO(),
+		ObjectID: objID, Actor: m.actor, ActorMSP: m.actorMSP, Detail: detail, Timestamp: nowISO(),
 	}}, m.data.Activities...)
 	if len(m.data.Activities) > 200 {
 		m.data.Activities = m.data.Activities[:200]
@@ -214,15 +237,11 @@ func (m *memoryStore) CreateApplication(in ApplicationInput) (*ProjectApplicatio
 	}
 	id := m.nextID("APP", m.applicationExists)
 	now := nowISO()
-	idea := in.IdeaText
-	if idea == "" {
-		idea = in.IdeaSummary
-	}
 	app := ProjectApplication{
 		ID: id, ProjectName: in.ProjectName, LeadID: in.LeadID, LeadName: in.LeadName,
 		Members: in.Members, MemberCount: len(in.Members), RequestedSeats: in.RequestedSeats,
 		PreferredSpace: in.PreferredSpace, StartDate: in.StartDate, EndDate: in.EndDate,
-		IdeaSummary: in.IdeaSummary, IdeaHash: hashOf(idea),
+		IdeaSummary: in.IdeaSummary, IdeaHash: hashOf(in.IdeaSummary),
 		Milestone: in.Milestone, MilestoneHash: hashOf(in.Milestone),
 		Status: "SUBMITTED", CreatedAt: now, UpdatedAt: now,
 	}
@@ -278,7 +297,13 @@ func (m *memoryStore) ActivateProject(appID string, spaceIDs []string) (*Project
 	if len(spaceIDs) == 0 {
 		return nil, fmt.Errorf("必须选择至少一个空间")
 	}
+	capacity := 0
+	seenSpaces := map[string]bool{}
 	for _, sid := range spaceIDs {
+		if seenSpaces[sid] {
+			return nil, fmt.Errorf("空间 %s 重复选择", sid)
+		}
+		seenSpaces[sid] = true
 		sp := m.findSpace(sid)
 		if sp == nil {
 			return nil, fmt.Errorf("空间 %s 不存在", sid)
@@ -289,6 +314,10 @@ func (m *memoryStore) ActivateProject(appID string, spaceIDs []string) (*Project
 		if m.hasConflict(sid, app.StartDate, app.EndDate, "") {
 			return nil, fmt.Errorf("空间 %s 在 %s 至 %s 已被占用", sid, app.StartDate, app.EndDate)
 		}
+		capacity += sp.Capacity
+	}
+	if capacity < app.RequestedSeats {
+		return nil, fmt.Errorf("所选空间容量 %d 低于申请工位数 %d", capacity, app.RequestedSeats)
 	}
 	projectID := m.nextID("PRJ", m.projectExists)
 	now := nowISO()
@@ -365,7 +394,7 @@ func (m *memoryStore) CloseProject(projectID, note string) error {
 		for _, b := range m.data.Borrows {
 			if b.ProjectID == projectID {
 				switch b.Status {
-				case "BORROWED", "RETURN_REQUESTED", "APPROVED", "PENDING":
+				case "BORROWED", "RETURN_REQUESTED", "APPROVED", "PENDING", "EXCEPTION":
 					out++
 				}
 			}
@@ -421,25 +450,26 @@ func (m *memoryStore) RequestBorrow(in BorrowInput) (*BorrowRecord, error) {
 	if eq.Status != "AVAILABLE" {
 		return nil, fmt.Errorf("设备当前状态为 %s，不可申请", eq.Status)
 	}
-	if in.ProjectID != "" {
-		found := false
-		for _, p := range m.data.Projects {
-			if p.ID == in.ProjectID {
-				if p.Status != "ACTIVE" {
-					return nil, fmt.Errorf("关联项目未处于入驻状态（%s）", p.Status)
-				}
-				found = true
+	if strings.TrimSpace(in.ProjectID) == "" {
+		return nil, fmt.Errorf("借用设备必须关联已入驻项目")
+	}
+	found := false
+	for _, p := range m.data.Projects {
+		if p.ID == in.ProjectID {
+			if p.Status != "ACTIVE" {
+				return nil, fmt.Errorf("关联项目未处于入驻状态（%s）", p.Status)
 			}
+			found = true
 		}
-		if !found {
-			return nil, fmt.Errorf("关联项目 %s 不存在", in.ProjectID)
-		}
+	}
+	if !found {
+		return nil, fmt.Errorf("关联项目 %s 不存在", in.ProjectID)
 	}
 	id := m.nextID("BR", m.borrowExists)
 	now := nowISO()
 	rec := BorrowRecord{
 		ID: id, EquipmentID: in.EquipmentID, EquipmentName: eq.Name, ProjectID: in.ProjectID,
-		Borrower: in.Borrower, Purpose: in.Purpose, PurposeHash: hashOf(in.Purpose),
+		BorrowerID: in.BorrowerID, Borrower: in.Borrower, Purpose: in.Purpose, PurposeHash: hashOf(in.Purpose),
 		DueDate: in.DueDate, Status: "PENDING", CreatedAt: now, UpdatedAt: now,
 	}
 	m.data.Borrows = append(m.data.Borrows, rec)

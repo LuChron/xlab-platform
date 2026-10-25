@@ -1,0 +1,217 @@
+package main
+
+import (
+	"crypto/x509"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/hyperledger/fabric-chaincode-go/shimtest"
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+type testIdentity struct {
+	id    string
+	msp   string
+	idErr bool
+}
+
+func (i *testIdentity) GetID() (string, error) {
+	if i.idErr {
+		return "", errors.New("identity unavailable")
+	}
+	return i.id, nil
+}
+func (i *testIdentity) GetMSPID() (string, error) { return i.msp, nil }
+func (i *testIdentity) GetAttributeValue(string) (string, bool, error) {
+	return "", false, nil
+}
+func (i *testIdentity) AssertAttributeValue(string, string) error { return nil }
+func (i *testIdentity) GetX509Certificate() (*x509.Certificate, error) {
+	return nil, nil
+}
+
+type chaincodeFixture struct {
+	contract *XLabContract
+	stub     *shimtest.MockStub
+	ctx      *contractapi.TransactionContext
+	nextTx   int
+}
+
+func newChaincodeFixture(id, msp string) *chaincodeFixture {
+	stub := shimtest.NewMockStub("xlab", nil)
+	ctx := new(contractapi.TransactionContext)
+	ctx.SetStub(stub)
+	ctx.SetClientIdentity(&testIdentity{id: id, msp: msp})
+	return &chaincodeFixture{contract: new(XLabContract), stub: stub, ctx: ctx}
+}
+
+func (f *chaincodeFixture) as(id, msp string) {
+	f.ctx.SetClientIdentity(&testIdentity{id: id, msp: msp})
+}
+
+func (f *chaincodeFixture) tx(t *testing.T, fn func() error) error {
+	t.Helper()
+	f.nextTx++
+	txID := "tx-" + string(rune('a'+f.nextTx))
+	f.stub.MockTransactionStart(txID)
+	defer f.stub.MockTransactionEnd(txID)
+	return fn()
+}
+
+func (f *chaincodeFixture) put(t *testing.T, key string, value interface{}) {
+	t.Helper()
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.tx(t, func() error { return f.stub.PutState(key, payload) }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInitLedgerRequiresAdminAndRunsOnlyOnce(t *testing.T) {
+	f := newChaincodeFixture("team-a", UserMSP)
+	err := f.tx(t, func() error { return f.contract.InitLedger(f.ctx) })
+	if err == nil || !strings.Contains(err.Error(), "权限不足") {
+		t.Fatalf("expected member initialization to be rejected, got %v", err)
+	}
+
+	f.as("admin", AdminMSP)
+	if err := f.tx(t, func() error { return f.contract.InitLedger(f.ctx) }); err != nil {
+		t.Fatalf("first admin initialization failed: %v", err)
+	}
+
+	var equipment Equipment
+	if err := json.Unmarshal(f.stub.State[equipmentPrefix+"EQ-001"], &equipment); err != nil {
+		t.Fatal(err)
+	}
+	equipment.Status = "BORROWED"
+	f.put(t, equipmentPrefix+equipment.ID, equipment)
+
+	err = f.tx(t, func() error { return f.contract.InitLedger(f.ctx) })
+	if err == nil {
+		t.Fatal("expected repeated initialization to be rejected")
+	}
+	if err := json.Unmarshal(f.stub.State[equipmentPrefix+"EQ-001"], &equipment); err != nil {
+		t.Fatal(err)
+	}
+	if equipment.Status != "BORROWED" {
+		t.Fatalf("repeated initialization overwrote equipment state: %s", equipment.Status)
+	}
+}
+
+func TestInitLedgerRejectsPartiallyPopulatedLedger(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	f.put(t, spacePrefix+"LEGACY", Space{ID: "LEGACY", Status: "OPEN"})
+	err := f.tx(t, func() error { return f.contract.InitLedger(f.ctx) })
+	if err == nil || !strings.Contains(err.Error(), "已存在") {
+		t.Fatalf("expected partial ledger state to block initialization, got %v", err)
+	}
+	if f.stub.State[equipmentPrefix+"EQ-001"] != nil {
+		t.Fatal("initialization wrote seed equipment into a partially populated ledger")
+	}
+}
+
+func TestActivateProjectRejectsInsufficientCapacity(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	f.put(t, applicationPrefix+"APP-1", ProjectApplication{
+		ID: "APP-1", ProjectName: "Large team", RequestedSeats: 99,
+		StartDate: "2026-10-01", EndDate: "2026-11-01", Status: "APPROVED",
+	})
+	f.put(t, spacePrefix+"A1", Space{ID: "A1", Status: "OPEN", Capacity: 2})
+
+	err := f.tx(t, func() error {
+		return f.contract.ActivateProject(f.ctx, "PRJ-1", "APP-1", `["A1"]`)
+	})
+	if err == nil || !strings.Contains(err.Error(), "容量") {
+		t.Fatalf("expected insufficient capacity error, got %v", err)
+	}
+}
+
+func TestCloseProjectRejectsUnresolvedException(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	f.put(t, projectPrefix+"PRJ-1", Project{ID: "PRJ-1", Status: "ACTIVE"})
+	f.put(t, borrowPrefix+"BOR-1", BorrowRecord{ID: "BOR-1", ProjectID: "PRJ-1", Status: "EXCEPTION"})
+
+	err := f.tx(t, func() error { return f.contract.CloseProject(f.ctx, "PRJ-1", "done") })
+	if err == nil || !strings.Contains(err.Error(), "未归还") {
+		t.Fatalf("expected unresolved exception to block close, got %v", err)
+	}
+
+	f.put(t, borrowPrefix+"BOR-1", BorrowRecord{ID: "BOR-1", ProjectID: "PRJ-1", Status: "RESOLVED"})
+	if err := f.tx(t, func() error { return f.contract.CloseProject(f.ctx, "PRJ-1", "done") }); err != nil {
+		t.Fatalf("resolved exception still blocked close: %v", err)
+	}
+}
+
+func TestMemberActionsRequireOrgAndObjectOwner(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	err := f.tx(t, func() error {
+		return f.contract.SubmitProjectApplication(f.ctx, "APP-1", "Project", "team-a", "Team A", `[]`, "2", `[]`, "2026-10-01", "2026-11-01", "summary", "hash", "m1", "mh")
+	})
+	if err == nil || !strings.Contains(err.Error(), "权限不足") {
+		t.Fatalf("expected Org1 application submission to be rejected, got %v", err)
+	}
+	f.as("team-a", UserMSP)
+	if err := f.tx(t, func() error {
+		return f.contract.SubmitProjectApplication(f.ctx, "APP-2", "Project", "team-a", "Team A", `[]`, "2", `[]`, "2026-10-01", "2026-11-01", "summary", "hash", "m1", "mh")
+	}); err != nil {
+		t.Fatalf("member application submission failed: %v", err)
+	}
+	var app ProjectApplication
+	if err := json.Unmarshal(f.stub.State[applicationPrefix+"APP-2"], &app); err != nil {
+		t.Fatal(err)
+	}
+	if app.OwnerIdentity != "team-a" {
+		t.Fatalf("application owner identity = %q, want team-a", app.OwnerIdentity)
+	}
+
+	f.put(t, projectPrefix+"PRJ-1", Project{ID: "PRJ-1", Status: "ACTIVE", OwnerIdentity: "team-a"})
+	f.as("team-b", UserMSP)
+	err = f.tx(t, func() error { return f.contract.SubmitMilestone(f.ctx, "PRJ-1", "changed", "hash") })
+	if err == nil || !strings.Contains(err.Error(), "归属") {
+		t.Fatalf("expected cross-team milestone to be rejected, got %v", err)
+	}
+
+	f.put(t, equipmentPrefix+"EQ-1", Equipment{ID: "EQ-1", Name: "Camera", Status: "AVAILABLE"})
+	err = f.tx(t, func() error {
+		return f.contract.RequestEquipmentBorrow(f.ctx, "BOR-1", "EQ-1", "PRJ-1", "team-b", "Team B", "shoot", "hash", "2026-11-01")
+	})
+	if err == nil || !strings.Contains(err.Error(), "归属") {
+		t.Fatalf("expected cross-team borrow to be rejected, got %v", err)
+	}
+
+	f.put(t, borrowPrefix+"BOR-2", BorrowRecord{ID: "BOR-2", Status: "BORROWED", BorrowerIdentity: "team-a"})
+	err = f.tx(t, func() error { return f.contract.RequestEquipmentReturn(f.ctx, "BOR-2", "return") })
+	if err == nil || !strings.Contains(err.Error(), "归属") {
+		t.Fatalf("expected non-borrower return to be rejected, got %v", err)
+	}
+}
+
+func TestMemberWriteRejectsUnverifiableClientIdentity(t *testing.T) {
+	f := newChaincodeFixture("team-a", UserMSP)
+	f.ctx.SetClientIdentity(&testIdentity{msp: UserMSP, idErr: true})
+	err := f.tx(t, func() error {
+		return f.contract.SubmitProjectApplication(f.ctx, "APP-1", "Project", "team-a", "Team A", `[]`, "2", `[]`, "2026-10-01", "2026-11-01", "summary", "hash", "m1", "mh")
+	})
+	if err == nil || !strings.Contains(err.Error(), "客户身份") {
+		t.Fatalf("expected unverifiable identity to be rejected, got %v", err)
+	}
+}
+
+func TestGetActivityLogSortsByTimestamp(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	f.put(t, activityPrefix+"tx-a", Activity{TxID: "tx-a", Timestamp: "2026-10-25T12:00:00Z"})
+	f.put(t, activityPrefix+"tx-b", Activity{TxID: "tx-b", Timestamp: "2026-10-25T12:00:00Z"})
+	f.put(t, activityPrefix+"tx-z", Activity{TxID: "tx-z", Timestamp: "2026-10-25T08:00:00Z"})
+
+	items, err := f.contract.GetActivityLog(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 || items[0].TxID != "tx-b" || items[1].TxID != "tx-a" {
+		t.Fatalf("expected newest activity first, got %#v", items)
+	}
+}

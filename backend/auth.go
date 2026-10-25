@@ -25,6 +25,8 @@ const (
 type User struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
+	TeamID      string `json:"teamId"`
+	SubjectName string `json:"subjectName"`
 	Role        string `json:"role"`
 	Org         string `json:"org"`
 	OrgLabel    string `json:"orgLabel"`
@@ -42,7 +44,8 @@ func demoAccounts() []Account {
 		{
 			User: User{
 				Username: "admin", DisplayName: "资源管理委员会", Role: RoleAdmin,
-				Org: "Org1MSP", OrgLabel: "X-Lab 资源管理委员会",
+				SubjectName: "资源管理委员会",
+				Org:         "Org1MSP", OrgLabel: "X-Lab 资源管理委员会",
 				Title: "空间与设备管理",
 			},
 			Password: "xlab2026",
@@ -50,6 +53,7 @@ func demoAccounts() []Account {
 		{
 			User: User{
 				Username: "team", DisplayName: "交互式学习装置", Role: RoleMember,
+				TeamID: "linxy", SubjectName: "林同学",
 				Org: "Org2MSP", OrgLabel: "入驻项目团队",
 				Title: "林同学 · 项目负责人",
 			},
@@ -230,17 +234,41 @@ func requireAdminRoleMiddleware() gin.HandlerFunc {
 	}
 }
 
+func requireMemberRole(c *gin.Context) bool {
+	u, ok := currentUser(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "请先登录"})
+		return false
+	}
+	if u.Role != RoleMember || strings.TrimSpace(u.TeamID) == "" {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"code": 403, "message": "权限不足：该操作仅允许已登记的入驻项目团队执行",
+		})
+		return false
+	}
+	return true
+}
+
+func requireMemberRoleMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !requireMemberRole(c) {
+			return
+		}
+		c.Next()
+	}
+}
+
 // storeFor 返回以当前登录用户组织身份签名的 Store。
 // 写操作必须走这个入口：链码的 actorMsp 读的是交易证书，
 // 团队发起的申请若由委员会私钥签名，账本上就查不出是谁提的。
-func storeFor(store Store, c *gin.Context) Store {
+func storeFor(store Store, c *gin.Context) (Store, error) {
 	aware, ok := store.(ActorAware)
 	if !ok {
-		return store
+		return store, nil
 	}
 	u, ok := currentUser(c)
 	if !ok || u.Org == "" {
-		return store
+		return nil, errors.New("无法确定当前请求的组织身份")
 	}
 	return aware.For(u.Org)
 }

@@ -73,9 +73,15 @@ func main() {
 			authed.GET("/auth/me", meHandler(auth))
 			authed.POST("/auth/logout", logoutHandler(auth))
 
-			// 项目入驻 —— 提交类：双方皆可
-			authed.POST("/applications", createApplicationHandler(store))
-			authed.POST("/projects/:id/milestone", milestoneHandler(store))
+			// 项目申请、成果和设备借还由入驻团队发起。
+			member := authed.Group("")
+			member.Use(requireMemberRoleMiddleware())
+			{
+				member.POST("/applications", createApplicationHandler(store))
+				member.POST("/projects/:id/milestone", milestoneHandler(store))
+				member.POST("/borrows", createBorrowHandler(store))
+				member.POST("/borrows/:id/return-request", returnRequestHandler(store))
+			}
 
 			// 项目入驻 —— 管理类：仅 Org1
 			admin := authed.Group("")
@@ -91,9 +97,6 @@ func main() {
 				admin.POST("/borrows/:id/resolve", resolveHandler(store))
 			}
 
-			// 设备交接 —— 使用方发起
-			authed.POST("/borrows", createBorrowHandler(store))
-			authed.POST("/borrows/:id/return-request", returnRequestHandler(store))
 		}
 	}
 

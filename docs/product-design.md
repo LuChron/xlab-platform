@@ -65,38 +65,36 @@
 ```text
 AVAILABLE -> REQUESTED -> APPROVED -> BORROWED
 BORROWED -> RETURN_REQUESTED -> RETURNED
-RETURN_REQUESTED -> EXCEPTION -> AVAILABLE
+RETURN_REQUESTED -> EXCEPTION -> RESOLVED
 ```
+
+异常单变为 `RESOLVED` 时，设备状态恢复为 `AVAILABLE`。
 
 ### 项目入驻
 
 ```text
-SUBMITTED -> APPROVED -> ACTIVATED
-SUBMITTED -> REJECTED
-ACTIVATED -> ACTIVE -> EXTENDED
-ACTIVE/EXTENDED -> CLOSED
+Application: SUBMITTED -> APPROVED -> ACTIVATED
+Application: SUBMITTED -> REJECTED
+Project: ACTIVE -> CLOSED
+Project: 续期后仍保持 ACTIVE，并累加 extensions
 ```
 
 ### 空间
 
 空间本身保持 `OPEN` 或 `MAINTENANCE`。占用状态通过带起止日期的 `SpaceAllocation` 计算，避免把未来安排覆盖成一个简单布尔值。
 
-## 链上链下边界
+## 当前数据边界
 
 链上保存：
 
 - 设备、空间和项目稳定编号。
 - 申请、审批、交接和验收状态。
 - 项目与设备、空间的关联。
-- 内容摘要、文件哈希、操作者身份、交易时间。
+- 项目说明、借用用途、内容摘要、操作者身份和交易时间。
 - 状态变更历史。
 
-链下保存：
-
-- idea 完整正文。
-- 设备照片、交接照片、成果文件。
-- 搜索索引和页面统计缓存。
-- 登录会话与不应公开的个人信息。
+链下当前只保存进程内登录会话和前端搜索状态。设备照片、交接照片和成果文件的
+对象存储尚未接入，相关字段只作为引用或摘要预留。
 
 ## 本次实现范围
 
@@ -105,4 +103,6 @@ ACTIVE/EXTENDED -> CLOSED
 3. 演示账本包含 28 台示例设备；型号与资产编号用于课程演示，不代表实际采购台账。
 4. 资源地图包含 3F / 4F 共 18 个空间单元，并按起止日期检测分配冲突。
 5. Org1 负责项目评审、空间分配、设备审批和交接确认；Org2 负责提交申请、成果与归还请求。
+6. 团队账号绑定项目和借用单，不允许跨团队修改成果或操作借用单。
+7. 空间分配需同时通过日期冲突和容量校验；未处理的设备异常会阻止结项。
 

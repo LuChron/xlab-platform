@@ -7,8 +7,8 @@ X-Lab 资源协作平台链码
   2) 设备申请与交接      EQUIPMENT / BORROW
 
 设计要点
-  - 链上只存业务主键、状态、摘要哈希、确认人与时间；正文与照片留在链下。
-  - 权限在链码层强制：审核、分配、交接确认只允许管理方组织（XLAB_ADMIN_MSP）执行。
+  - 链上保存业务字段、状态、摘要哈希、操作身份与时间；文件存储尚未接入。
+  - 权限在链码层强制：审核、分配、交接确认只允许管理方组织（Org1MSP）执行。
   - 每次状态变更追加一条 ACTIVITY 记录，形成不可篡改的操作流。
 */
 
@@ -17,6 +17,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ const (
 	borrowPrefix      = "BORROW:"
 	allocationPrefix  = "ALLOCATION:"
 	activityPrefix    = "ACTIVITY:"
+	initializedKey    = "META:INITIALIZED"
 )
 
 // 组织与角色
@@ -108,28 +110,30 @@ type ProjectApplication struct {
 	ProjectID      string   `json:"projectId"`
 	CreatedAt      string   `json:"createdAt"`
 	UpdatedAt      string   `json:"updatedAt"`
+	OwnerIdentity  string   `json:"ownerIdentity"`
 }
 
 // Project 已入驻项目
 type Project struct {
-	ID             string   `json:"id"`
-	ApplicationID  string   `json:"applicationId"`
-	Name           string   `json:"name"`
-	LeadID         string   `json:"leadId"`
-	LeadName       string   `json:"leadName"`
-	Members        []string `json:"members"`
-	MemberCount    int      `json:"memberCount"`
-	Summary        string   `json:"summary"`
-	Status         string   `json:"status"`
-	SpaceIDs       []string `json:"spaceIds"`
-	StartDate      string   `json:"startDate"`
-	EndDate        string   `json:"endDate"`
-	Milestone      string   `json:"milestone"`
-	MilestoneHash  string   `json:"milestoneHash"`
-	Extensions     int      `json:"extensions"`
-	CloseNote      string   `json:"closeNote"`
-	CreatedAt      string   `json:"createdAt"`
-	UpdatedAt      string   `json:"updatedAt"`
+	ID            string   `json:"id"`
+	ApplicationID string   `json:"applicationId"`
+	Name          string   `json:"name"`
+	LeadID        string   `json:"leadId"`
+	LeadName      string   `json:"leadName"`
+	Members       []string `json:"members"`
+	MemberCount   int      `json:"memberCount"`
+	Summary       string   `json:"summary"`
+	Status        string   `json:"status"`
+	SpaceIDs      []string `json:"spaceIds"`
+	StartDate     string   `json:"startDate"`
+	EndDate       string   `json:"endDate"`
+	Milestone     string   `json:"milestone"`
+	MilestoneHash string   `json:"milestoneHash"`
+	Extensions    int      `json:"extensions"`
+	CloseNote     string   `json:"closeNote"`
+	CreatedAt     string   `json:"createdAt"`
+	UpdatedAt     string   `json:"updatedAt"`
+	OwnerIdentity string   `json:"ownerIdentity"`
 }
 
 // SpaceAllocation 空间占用区间
@@ -145,30 +149,32 @@ type SpaceAllocation struct {
 
 // BorrowRecord 设备交接单
 type BorrowRecord struct {
-	ID            string   `json:"id"`
-	EquipmentID   string   `json:"equipmentId"`
-	EquipmentName string   `json:"equipmentName"`
-	ProjectID     string   `json:"projectId"`
-	Borrower      string   `json:"borrower"`
-	Purpose       string   `json:"purpose"`
-	PurposeHash   string   `json:"purposeHash"`
-	DueDate       string   `json:"dueDate"`
-	Status        string   `json:"status"`
-	Reviewer      string   `json:"reviewer"`
-	ReviewedAt    string   `json:"reviewedAt"`
-	ReviewNote    string   `json:"reviewNote"`
-	PickupBy      string   `json:"pickupBy"`
-	PickupAt      string   `json:"pickupAt"`
-	PickupPhotos  []string `json:"pickupPhotos"`
-	ReturnBy      string   `json:"returnBy"`
-	ReturnAt      string   `json:"returnAt"`
-	ReturnPhotos  []string `json:"returnPhotos"`
-	Condition     string   `json:"condition"`
-	EvidenceHash  string   `json:"evidenceHash"`
-	ExceptionNote string   `json:"exceptionNote"`
-	Overdue       bool     `json:"overdue"`
-	CreatedAt     string   `json:"createdAt"`
-	UpdatedAt     string   `json:"updatedAt"`
+	ID               string   `json:"id"`
+	EquipmentID      string   `json:"equipmentId"`
+	EquipmentName    string   `json:"equipmentName"`
+	ProjectID        string   `json:"projectId"`
+	BorrowerID       string   `json:"borrowerId"`
+	Borrower         string   `json:"borrower"`
+	BorrowerIdentity string   `json:"borrowerIdentity"`
+	Purpose          string   `json:"purpose"`
+	PurposeHash      string   `json:"purposeHash"`
+	DueDate          string   `json:"dueDate"`
+	Status           string   `json:"status"`
+	Reviewer         string   `json:"reviewer"`
+	ReviewedAt       string   `json:"reviewedAt"`
+	ReviewNote       string   `json:"reviewNote"`
+	PickupBy         string   `json:"pickupBy"`
+	PickupAt         string   `json:"pickupAt"`
+	PickupPhotos     []string `json:"pickupPhotos"`
+	ReturnBy         string   `json:"returnBy"`
+	ReturnAt         string   `json:"returnAt"`
+	ReturnPhotos     []string `json:"returnPhotos"`
+	Condition        string   `json:"condition"`
+	EvidenceHash     string   `json:"evidenceHash"`
+	ExceptionNote    string   `json:"exceptionNote"`
+	Overdue          bool     `json:"overdue"`
+	CreatedAt        string   `json:"createdAt"`
+	UpdatedAt        string   `json:"updatedAt"`
 }
 
 // Activity 操作流水（链上审计轨迹）
@@ -216,6 +222,25 @@ type XLabContract struct{ contractapi.Contract }
 
 // InitLedger 写入演示用的空间与设备台账
 func (c *XLabContract) InitLedger(ctx contractapi.TransactionContextInterface) error {
+	if err := requireAdmin(ctx); err != nil {
+		return err
+	}
+	marker, err := ctx.GetStub().GetState(initializedKey)
+	if err != nil {
+		return err
+	}
+	if marker != nil {
+		return fmt.Errorf("账本已初始化，禁止重复执行 InitLedger")
+	}
+	for _, prefix := range []string{spacePrefix, equipmentPrefix, projectPrefix, applicationPrefix, borrowPrefix, allocationPrefix, activityPrefix} {
+		exists, err := statePrefixExists(ctx, prefix)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return fmt.Errorf("账本已存在业务数据，禁止执行 InitLedger")
+		}
+	}
 	now, err := transactionTime(ctx)
 	if err != nil {
 		return err
@@ -286,6 +311,9 @@ func (c *XLabContract) InitLedger(ctx contractapi.TransactionContextInterface) e
 		if err := putJSON(ctx, equipmentPrefix+e.ID, e); err != nil {
 			return err
 		}
+	}
+	if err := ctx.GetStub().PutState(initializedKey, []byte(now)); err != nil {
+		return err
 	}
 	return c.logActivity(ctx, "INIT_LEDGER", "LEDGER", "xlab", fmt.Sprintf("初始化 %d 个空间与 %d 台设备", len(spaces), len(equipment)))
 }
@@ -379,6 +407,13 @@ func (c *XLabContract) CreateSpace(ctx contractapi.TransactionContextInterface, 
 
 // SubmitProjectApplication 提交 idea 入驻申请（使用方）
 func (c *XLabContract) SubmitProjectApplication(ctx contractapi.TransactionContextInterface, id, projectName, leadID, leadName, membersJSON, requestedSeatsText, preferredSpaceJSON, startDate, endDate, ideaSummary, ideaHash, milestone, milestoneHash string) error {
+	if err := requireMember(ctx); err != nil {
+		return err
+	}
+	ownerIdentity, err := verifiedClientID(ctx)
+	if err != nil {
+		return err
+	}
 	if err := requireMissing(ctx, applicationPrefix+id); err != nil {
 		return err
 	}
@@ -416,7 +451,7 @@ func (c *XLabContract) SubmitProjectApplication(ctx contractapi.TransactionConte
 		Members: members, MemberCount: len(members), RequestedSeats: seats,
 		PreferredSpace: preferred, StartDate: startDate, EndDate: endDate,
 		IdeaSummary: ideaSummary, IdeaHash: ideaHash, Milestone: milestone, MilestoneHash: milestoneHash,
-		Status: "SUBMITTED", CreatedAt: now, UpdatedAt: now,
+		Status: "SUBMITTED", CreatedAt: now, UpdatedAt: now, OwnerIdentity: ownerIdentity,
 	}
 	if err := putJSON(ctx, applicationPrefix+id, app); err != nil {
 		return err
@@ -475,7 +510,13 @@ func (c *XLabContract) ActivateProject(ctx contractapi.TransactionContextInterfa
 	if err := json.Unmarshal([]byte(spaceIDsJSON), &spaceIDs); err != nil || len(spaceIDs) == 0 {
 		return fmt.Errorf("必须选择至少一个空间")
 	}
+	capacity := 0
+	seenSpaces := map[string]bool{}
 	for _, sid := range spaceIDs {
+		if seenSpaces[sid] {
+			return fmt.Errorf("空间 %s 重复选择", sid)
+		}
+		seenSpaces[sid] = true
 		var sp Space
 		if err := getJSON(ctx, spacePrefix+sid, &sp); err != nil {
 			return err
@@ -490,6 +531,10 @@ func (c *XLabContract) ActivateProject(ctx contractapi.TransactionContextInterfa
 		if conflict {
 			return fmt.Errorf("空间 %s 在 %s 至 %s 已被占用", sid, app.StartDate, app.EndDate)
 		}
+		capacity += sp.Capacity
+	}
+	if capacity < app.RequestedSeats {
+		return fmt.Errorf("所选空间容量 %d 低于申请工位数 %d", capacity, app.RequestedSeats)
 	}
 	now, err := transactionTime(ctx)
 	if err != nil {
@@ -501,7 +546,7 @@ func (c *XLabContract) ActivateProject(ctx contractapi.TransactionContextInterfa
 		Summary: app.IdeaSummary, Status: "ACTIVE", SpaceIDs: spaceIDs,
 		StartDate: app.StartDate, EndDate: app.EndDate,
 		Milestone: app.Milestone, MilestoneHash: app.MilestoneHash,
-		CreatedAt: now, UpdatedAt: now,
+		CreatedAt: now, UpdatedAt: now, OwnerIdentity: app.OwnerIdentity,
 	}
 	if err := putJSON(ctx, projectPrefix+projectID, project); err != nil {
 		return err
@@ -619,12 +664,18 @@ func (c *XLabContract) CloseProject(ctx contractapi.TransactionContextInterface,
 
 // SubmitMilestone 提交阶段成果（使用方）
 func (c *XLabContract) SubmitMilestone(ctx contractapi.TransactionContextInterface, projectID, milestone, milestoneHash string) error {
+	if err := requireMember(ctx); err != nil {
+		return err
+	}
 	var p Project
 	if err := getJSON(ctx, projectPrefix+projectID, &p); err != nil {
 		return err
 	}
 	if p.Status != "ACTIVE" {
 		return fmt.Errorf("项目当前状态为 %s，不能提交成果", p.Status)
+	}
+	if err := requireOwner(ctx, p.OwnerIdentity); err != nil {
+		return err
 	}
 	now, err := transactionTime(ctx)
 	if err != nil {
@@ -640,7 +691,14 @@ func (c *XLabContract) SubmitMilestone(ctx contractapi.TransactionContextInterfa
 // ------------------------------ 设备借用 ------------------------------
 
 // RequestEquipmentBorrow 提交借用申请（使用方）
-func (c *XLabContract) RequestEquipmentBorrow(ctx contractapi.TransactionContextInterface, borrowID, equipmentID, projectID, borrower, purpose, purposeHash, dueDate string) error {
+func (c *XLabContract) RequestEquipmentBorrow(ctx contractapi.TransactionContextInterface, borrowID, equipmentID, projectID, borrowerID, borrower, purpose, purposeHash, dueDate string) error {
+	if err := requireMember(ctx); err != nil {
+		return err
+	}
+	borrowerIdentity, err := verifiedClientID(ctx)
+	if err != nil {
+		return err
+	}
 	if err := requireMissing(ctx, borrowPrefix+borrowID); err != nil {
 		return err
 	}
@@ -657,14 +715,18 @@ func (c *XLabContract) RequestEquipmentBorrow(ctx contractapi.TransactionContext
 	if eq.Status != "AVAILABLE" {
 		return fmt.Errorf("设备 %s 当前状态为 %s，不可申请", equipmentID, eq.Status)
 	}
-	if projectID != "" {
-		var p Project
-		if err := getJSON(ctx, projectPrefix+projectID, &p); err != nil {
-			return err
-		}
-		if p.Status != "ACTIVE" {
-			return fmt.Errorf("关联项目未处于入驻状态（%s）", p.Status)
-		}
+	if strings.TrimSpace(projectID) == "" {
+		return fmt.Errorf("借用设备必须关联已入驻项目")
+	}
+	var p Project
+	if err := getJSON(ctx, projectPrefix+projectID, &p); err != nil {
+		return err
+	}
+	if p.Status != "ACTIVE" {
+		return fmt.Errorf("关联项目未处于入驻状态（%s）", p.Status)
+	}
+	if err := requireOwner(ctx, p.OwnerIdentity); err != nil {
+		return err
 	}
 	now, err := transactionTime(ctx)
 	if err != nil {
@@ -672,7 +734,8 @@ func (c *XLabContract) RequestEquipmentBorrow(ctx contractapi.TransactionContext
 	}
 	rec := BorrowRecord{
 		ID: borrowID, EquipmentID: equipmentID, EquipmentName: eq.Name, ProjectID: projectID,
-		Borrower: borrower, Purpose: purpose, PurposeHash: purposeHash, DueDate: dueDate,
+		BorrowerID: borrowerID, Borrower: borrower, BorrowerIdentity: borrowerIdentity,
+		Purpose: purpose, PurposeHash: purposeHash, DueDate: dueDate,
 		Status: "PENDING", PickupPhotos: []string{}, ReturnPhotos: []string{},
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -726,7 +789,7 @@ func (c *XLabContract) ReviewEquipmentBorrow(ctx contractapi.TransactionContextI
 	return c.logActivity(ctx, "REVIEW_BORROW", "borrow", borrowID, fmt.Sprintf("approved=%v", approved))
 }
 
-// ConfirmEquipmentPickup 领取交接：双方确认设备与附件（仅管理方发起）
+// ConfirmEquipmentPickup 领取交接：管理方记录现场核对的设备与附件状态。
 func (c *XLabContract) ConfirmEquipmentPickup(ctx contractapi.TransactionContextInterface, borrowID, condition, photosJSON string) error {
 	if err := requireAdmin(ctx); err != nil {
 		return err
@@ -766,12 +829,18 @@ func (c *XLabContract) ConfirmEquipmentPickup(ctx contractapi.TransactionContext
 
 // RequestEquipmentReturn 发起归还（使用方）
 func (c *XLabContract) RequestEquipmentReturn(ctx contractapi.TransactionContextInterface, borrowID, note string) error {
+	if err := requireMember(ctx); err != nil {
+		return err
+	}
 	var rec BorrowRecord
 	if err := getJSON(ctx, borrowPrefix+borrowID, &rec); err != nil {
 		return err
 	}
 	if rec.Status != "BORROWED" {
 		return fmt.Errorf("借用单当前状态为 %s，不能发起归还", rec.Status)
+	}
+	if err := requireOwner(ctx, rec.BorrowerIdentity); err != nil {
+		return err
 	}
 	now, err := transactionTime(ctx)
 	if err != nil {
@@ -1011,9 +1080,12 @@ func (c *XLabContract) GetActivityLog(ctx contractapi.TransactionContextInterfac
 	if err != nil {
 		return nil, err
 	}
-	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
-		items[i], items[j] = items[j], items[i]
-	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Timestamp == items[j].Timestamp {
+			return items[i].TxID > items[j].TxID
+		}
+		return items[i].Timestamp > items[j].Timestamp
+	})
 	if len(items) > 200 {
 		items = items[:200]
 	}
@@ -1173,7 +1245,7 @@ func (c *XLabContract) countOutstandingBorrows(ctx contractapi.TransactionContex
 			return nil
 		}
 		switch item.Status {
-		case "BORROWED", "RETURN_REQUESTED", "APPROVED", "PENDING":
+		case "BORROWED", "RETURN_REQUESTED", "APPROVED", "PENDING", "EXCEPTION":
 			count++
 		}
 		return nil
@@ -1202,6 +1274,26 @@ func requireAdmin(ctx contractapi.TransactionContextInterface) error {
 	return nil
 }
 
+// requireMember 仅允许入驻项目团队组织执行。
+func requireMember(ctx contractapi.TransactionContextInterface) error {
+	msp := mspID(ctx)
+	if msp != UserMSP {
+		return fmt.Errorf("权限不足：该操作仅允许 %s 执行，当前身份 %s（%s）", UserMSP, clientID(ctx), msp)
+	}
+	return nil
+}
+
+func requireOwner(ctx contractapi.TransactionContextInterface, ownerIdentity string) error {
+	currentIdentity, err := verifiedClientID(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(ownerIdentity) == "" || ownerIdentity != currentIdentity {
+		return fmt.Errorf("对象归属校验失败：当前身份无权操作该记录")
+	}
+	return nil
+}
+
 func mspID(ctx contractapi.TransactionContextInterface) string {
 	msp, err := ctx.GetClientIdentity().GetMSPID()
 	if err != nil {
@@ -1216,6 +1308,14 @@ func clientID(ctx contractapi.TransactionContextInterface) string {
 		return "unknown"
 	}
 	return id
+}
+
+func verifiedClientID(ctx contractapi.TransactionContextInterface) (string, error) {
+	id, err := ctx.GetClientIdentity().GetID()
+	if err != nil || strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("无法验证 Fabric 客户身份")
+	}
+	return id, nil
 }
 
 func isOverdue(rec BorrowRecord) bool {
@@ -1269,6 +1369,15 @@ func putJSON(ctx contractapi.TransactionContextInterface, key string, value inte
 		return err
 	}
 	return ctx.GetStub().PutState(key, payload)
+}
+
+func statePrefixExists(ctx contractapi.TransactionContextInterface, prefix string) (bool, error) {
+	iterator, err := ctx.GetStub().GetStateByRange(prefix, prefix+"\uffff")
+	if err != nil {
+		return false, err
+	}
+	defer iterator.Close()
+	return iterator.HasNext(), nil
 }
 
 func requireMissing(ctx contractapi.TransactionContextInterface, key string) error {

@@ -80,6 +80,9 @@ func TestDemoAccountsAndSessions(t *testing.T) {
 	if member.User.Role != RoleMember || member.User.Org != "Org2MSP" {
 		t.Fatalf("unexpected member identity: %+v", member.User)
 	}
+	if member.User.TeamID != "linxy" || member.User.SubjectName != "林同学" {
+		t.Fatalf("member account is not bound to the seeded project owner: %+v", member.User)
+	}
 }
 
 func assertUniqueIDs(t *testing.T, kind string, ids []string) {

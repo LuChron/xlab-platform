@@ -21,7 +21,7 @@
   └─ 项目入驻与空间入口
          ↓ REST API
 Go 后端
-  ├─ 业务校验与链下文件索引
+├─ 业务校验与登录会话
   └─ Fabric Gateway
          ↓
 Fabric test-network / xlab channel / xlab chaincode
@@ -78,4 +78,4 @@ Fabric test-network / xlab channel / xlab chaincode
 3. 100 秒：申请项目入驻，展示空间选择和日期冲突。
 4. 100 秒：关联已入驻项目借用设备，完成审批和领取。
 5. 70 秒：完成归还验收，查看区块高度、交易 ID 和状态历史。
-6. 40 秒：总结项目价值、链上链下边界和后续可扩展点。
+6. 40 秒：总结项目价值、当前数据边界和后续可扩展点。

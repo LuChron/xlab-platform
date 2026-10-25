@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useLedger } from '../lib/store'
+import { useAuth } from '../lib/auth'
 import {
   APPLICATION_STATUS, PROJECT_STATUS, SPACE_KIND,
   label, tone, fmtDate, toInputDate,
@@ -14,6 +15,7 @@ import StatusChip from '../components/StatusChip.vue'
 import AppModal from '../components/AppModal.vue'
 
 const ledger = useLedger()
+const auth = useAuth()
 const router = useRouter()
 const route = useRoute()
 
@@ -89,8 +91,7 @@ const showApply = ref(false)
 const submitting = ref(false)
 const form = ref({
   projectName: '',
-  leadName: '赵同学',
-  leadId: 'zhaox',
+  leadName: '',
   membersText: '',
   requestedSeats: 2,
   startDate: '',
@@ -106,6 +107,7 @@ function openApply() {
   end.setDate(end.getDate() + 28)
   form.value.startDate = toInputDate(start)
   form.value.endDate = toInputDate(end)
+  form.value.leadName = auth.user?.subjectName || ''
   showApply.value = true
 }
 
@@ -133,14 +135,12 @@ async function submitApply() {
     await ledger.createApplication({
       projectName: form.value.projectName,
       leadName: form.value.leadName,
-      leadId: form.value.leadId,
       members: members.length ? members : [form.value.leadName],
       requestedSeats: Number(form.value.requestedSeats),
       preferredSpace: selectedSpaces.value,
       startDate: form.value.startDate,
       endDate: form.value.endDate,
       ideaSummary: form.value.ideaSummary,
-      ideaText: form.value.ideaSummary,
       milestone: form.value.milestone,
     })
     showApply.value = false
@@ -333,7 +333,7 @@ const activeSpaceHelp = computed(() => {
         </div>
         <div class="field">
           <label for="apply-lead">项目负责人</label>
-          <input id="apply-lead" v-model="form.leadName" name="leadName" autocomplete="name" required />
+          <input id="apply-lead" v-model="form.leadName" name="leadName" autocomplete="name" required readonly />
         </div>
         <div class="field">
           <label for="apply-members">团队成员（逗号分隔）</label>

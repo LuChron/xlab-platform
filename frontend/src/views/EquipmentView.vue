@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useLedger } from '../lib/store'
+import { useAuth } from '../lib/auth'
 import { useReveal } from '../lib/reveal'
 import { usePointerTilt } from '../lib/pointer'
 import { useParallax } from '../lib/parallax'
@@ -12,6 +13,7 @@ import AppModal from '../components/AppModal.vue'
 import { scrollElementIntoView } from '../lib/motion'
 
 const ledger = useLedger()
+const auth = useAuth()
 const router = useRouter()
 const route = useRoute()
 
@@ -71,8 +73,9 @@ const filters = [
 
 const showBorrow = ref(false)
 const borrowTarget = ref(null)
-const form = ref({ projectId: '', borrower: '赵同学', purpose: '', dueDate: '' })
+const form = ref({ projectId: '', borrower: '', purpose: '', dueDate: '' })
 const submitting = ref(false)
+const memberProjects = computed(() => ledger.activeProjects.filter((p) => p.leadId === auth.user?.teamId))
 
 // 首屏的主行动：把视线直接带到第一册可借设备上
 function jumpToAvailable() {
@@ -85,8 +88,8 @@ function openBorrow(eq) {
   const d = new Date()
   d.setDate(d.getDate() + 14)
   form.value = {
-    projectId: ledger.activeProjects[0]?.id || '',
-    borrower: '赵同学',
+    projectId: memberProjects.value[0]?.id || '',
+    borrower: auth.user?.subjectName || '',
     purpose: '',
     dueDate: toInputDate(d),
   }
@@ -94,6 +97,11 @@ function openBorrow(eq) {
 }
 
 async function submitBorrow() {
+  if (!form.value.projectId) {
+    window.__xlabToast?.('请先选择所属项目', 'err')
+    requestAnimationFrame(() => document.querySelector('#borrow-project')?.focus())
+    return
+  }
   if (!form.value.borrower.trim()) {
     window.__xlabToast?.('请填写借用人', 'err')
     requestAnimationFrame(() => document.querySelector('#borrow-person')?.focus())
@@ -135,7 +143,7 @@ async function submitBorrow() {
       <div class="eq-copy" data-reveal>
         <h1>设备借还</h1>
         <p class="eq-sub">
-          这里列出设备状态、存放位置和保管人。申请通过后领取；归还时由双方确认设备状况。
+          这里列出设备状态、存放位置和保管人。申请通过后现场领取；归还时由管理方记录验收结果。
         </p>
         <ul class="eq-tally">
           <li>
@@ -277,13 +285,13 @@ async function submitBorrow() {
         <div class="field span-2">
           <label for="borrow-project">关联项目</label>
           <select id="borrow-project" v-model="form.projectId" name="projectId" autocomplete="off">
-            <option value="">个人借用（不关联项目）</option>
-            <option v-for="p in ledger.activeProjects" :key="p.id" :value="p.id">{{ p.id }} · {{ p.name }}</option>
+            <option value="" disabled>请选择所属项目</option>
+            <option v-for="p in memberProjects" :key="p.id" :value="p.id">{{ p.id }} · {{ p.name }}</option>
           </select>
         </div>
         <div class="field">
           <label for="borrow-person">借用人</label>
-          <input id="borrow-person" v-model="form.borrower" name="borrower" autocomplete="name" required />
+          <input id="borrow-person" v-model="form.borrower" name="borrower" autocomplete="name" required readonly />
         </div>
         <div class="field">
           <label for="borrow-due">预计归还日期</label>
@@ -296,8 +304,8 @@ async function submitBorrow() {
       </div>
 
       <div class="note-box">
-        提交后管理方审批 → 双方确认领取（记录设备现状与附件）→ 使用 → 发起归还 → 验收。
-        用途文本与照片只存哈希，正文留在链下。
+        提交后管理方审批 → 现场核对并记录领取 → 使用 → 发起归还 → 管理方验收。
+        借用单记录项目、用途和状态流转；交接证据使用摘要核验。
       </div>
 
       <template #foot>

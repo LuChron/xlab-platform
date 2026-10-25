@@ -116,7 +116,7 @@ function blockTxLabel(tx) {
       <div class="ch-copy" data-reveal>
         <h1>链上记录</h1>
         <p class="ch-sub">
-          这里显示申请、审批、交接和验收记录。链上保存编号、状态、摘要和确认人；正文与照片仍存放在链下。
+          这里显示申请、审批、交接和验收记录。链上保存业务编号、状态、内容摘要、操作身份和时间。
         </p>
         <ul class="ch-tally">
           <li data-reveal data-delay="40"><b><CountUp :to="ledger.activities.length" /></b><span>笔链上记录</span></li>

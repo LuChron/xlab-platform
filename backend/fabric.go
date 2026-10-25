@@ -42,16 +42,17 @@ type fabricStore struct {
 	// actor 只决定本次交易由谁签名，读接口不受影响。
 	cfg    FabricConfig
 	peers  map[string]*orgPeer
+	peerMu *sync.RWMutex
 	actor  string
 	shared bool
 }
 
 // orgPeer 一个组织到 peer 的已建立连接
 type orgPeer struct {
-	mspID     string
-	contract  *client.Contract
-	conn      *grpc.ClientConn
-	gateway   *client.Gateway
+	mspID    string
+	contract *client.Contract
+	conn     *grpc.ClientConn
+	gateway  *client.Gateway
 }
 
 // FabricConfig Fabric 连接配置
@@ -132,8 +133,9 @@ func newFabricStore(cfg FabricConfig) (*fabricStore, error) {
 	return &fabricStore{
 		contract: contract, conn: conn, gateway: gw,
 		channel: cfg.ChannelName, chaincode: cfg.ChaincodeName,
-		cfg:   cfg,
-		actor: cfg.MSPID,
+		cfg:    cfg,
+		actor:  cfg.MSPID,
+		peerMu: new(sync.RWMutex),
 		peers: map[string]*orgPeer{
 			cfg.MSPID: {mspID: cfg.MSPID, contract: contract, conn: conn, gateway: gw},
 		},
@@ -143,25 +145,36 @@ func newFabricStore(cfg FabricConfig) (*fabricStore, error) {
 // For 返回以指定组织身份签名的视图：读接口共享同一批连接，写接口改用该组织的证书与私钥。
 // 链码里的 actorMsp 取自交易证书，所以团队提交的申请必须由 Org2 签名，
 // 否则账本上所有操作都记在委员会名下，审计就失去意义。
-func (f *fabricStore) For(mspID string) Store {
-	if mspID == "" || mspID == f.actor {
-		return f
+func (f *fabricStore) For(mspID string) (Store, error) {
+	if mspID == "" {
+		return nil, fmt.Errorf("组织身份不能为空")
 	}
-	if _, ok := f.peers[mspID]; !ok {
+	if mspID == f.actor {
+		return f, nil
+	}
+	f.peerMu.RLock()
+	_, exists := f.peers[mspID]
+	f.peerMu.RUnlock()
+	if !exists {
 		if err := f.dialOrg(mspID); err != nil {
-			log.Printf("[XLAB] %s 身份不可用（%v），该组织请求仍以 %s 签名", mspID, err, f.cfg.MSPID)
-			return f
+			return nil, fmt.Errorf("%s 身份不可用: %w", mspID, err)
 		}
 	}
 	return &fabricStore{
 		contract: f.contract, conn: f.conn, gateway: f.gateway,
 		channel: f.channel, chaincode: f.chaincode,
-		cfg: f.cfg, actor: mspID, peers: f.peers, shared: true,
-	}
+		cfg: f.cfg, actor: mspID, peers: f.peers, peerMu: f.peerMu, shared: true,
+	}, nil
 }
 
 // dialOrg 为其它组织建立 Gateway 连接（复用同一份 peer 配置，仅换证书与私钥）
 func (f *fabricStore) dialOrg(mspID string) error {
+	f.peerMu.Lock()
+	defer f.peerMu.Unlock()
+	if _, ok := f.peers[mspID]; ok {
+		return nil
+	}
+
 	var cfg FabricConfig
 	switch mspID {
 	case "Org2MSP":
@@ -195,11 +208,13 @@ func (f *fabricStore) dialOrg(mspID string) error {
 }
 
 // writeContract 当前身份对应的合同对象
-func (f *fabricStore) writeContract() *client.Contract {
+func (f *fabricStore) writeContract() (*client.Contract, error) {
+	f.peerMu.RLock()
+	defer f.peerMu.RUnlock()
 	if p, ok := f.peers[f.actor]; ok {
-		return p.contract
+		return p.contract, nil
 	}
-	return f.contract
+	return nil, fmt.Errorf("组织 %s 的 Fabric 签名连接不可用", f.actor)
 }
 
 func (f *fabricStore) Mode() string { return "fabric" }
@@ -351,7 +366,13 @@ func (f *fabricStore) Close() {
 	if f.shared {
 		return // 视图共享主连接，由主实例负责关闭
 	}
+	f.peerMu.RLock()
+	peers := make([]*orgPeer, 0, len(f.peers))
 	for _, p := range f.peers {
+		peers = append(peers, p)
+	}
+	f.peerMu.RUnlock()
+	for _, p := range peers {
 		if p.gateway != nil {
 			p.gateway.Close()
 		}
@@ -416,7 +437,11 @@ func (f *fabricStore) query(fn string, target interface{}) error {
 func (f *fabricStore) submit(fn string, args ...string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	payload, err := f.writeContract().SubmitTransaction(fn, args...)
+	contract, err := f.writeContract()
+	if err != nil {
+		return nil, err
+	}
+	payload, err := contract.SubmitTransaction(fn, args...)
 	if err != nil {
 		return nil, fmt.Errorf("提交 %s 失败: %s", fn, chaincodeReason(err))
 	}
@@ -452,14 +477,10 @@ func (f *fabricStore) CreateApplication(in ApplicationInput) (*ProjectApplicatio
 	id := fmt.Sprintf("APP-%d", time.Now().UnixMilli())
 	membersJSON, _ := json.Marshal(in.Members)
 	preferredJSON, _ := json.Marshal(in.PreferredSpace)
-	idea := in.IdeaText
-	if idea == "" {
-		idea = in.IdeaSummary
-	}
 	_, err := f.submit("SubmitProjectApplication",
 		id, in.ProjectName, in.LeadID, in.LeadName,
 		string(membersJSON), fmt.Sprint(in.RequestedSeats), string(preferredJSON),
-		in.StartDate, in.EndDate, in.IdeaSummary, hashOf(idea), in.Milestone, hashOf(in.Milestone),
+		in.StartDate, in.EndDate, in.IdeaSummary, hashOf(in.IdeaSummary), in.Milestone, hashOf(in.Milestone),
 	)
 	if err != nil {
 		return nil, err
@@ -516,7 +537,7 @@ func (f *fabricStore) SubmitMilestone(projectID, milestone string) error {
 func (f *fabricStore) RequestBorrow(in BorrowInput) (*BorrowRecord, error) {
 	id := fmt.Sprintf("BR-%d", time.Now().UnixMilli())
 	if _, err := f.submit("RequestEquipmentBorrow",
-		id, in.EquipmentID, in.ProjectID, in.Borrower, in.Purpose, hashOf(in.Purpose), in.DueDate,
+		id, in.EquipmentID, in.ProjectID, in.BorrowerID, in.Borrower, in.Purpose, hashOf(in.Purpose), in.DueDate,
 	); err != nil {
 		return nil, err
 	}

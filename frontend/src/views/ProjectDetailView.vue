@@ -322,7 +322,7 @@ async function doReturnRequest(id) {
 
 
     <!-- 弹窗 -->
-    <AppModal v-if="modal === 'milestone'" title="提交阶段成果" subtitle="成果摘要上链，正文与附件留在链下" @close="modal = ''">
+    <AppModal v-if="modal === 'milestone'" title="提交阶段成果" subtitle="成果说明与内容摘要一同记账，附件存储尚未接入" @close="modal = ''">
       <div class="field">
         <label for="milestone-note">成果说明</label>
         <textarea id="milestone-note" v-model="noteText" name="milestoneNote" autocomplete="off" placeholder="完成了什么、如何验证、下一步计划…" />

@@ -67,6 +67,7 @@ type ProjectApplication struct {
 	ProjectID      string   `json:"projectId"`
 	CreatedAt      string   `json:"createdAt"`
 	UpdatedAt      string   `json:"updatedAt"`
+	OwnerIdentity  string   `json:"ownerIdentity"`
 }
 
 // Project 已入驻项目
@@ -89,6 +90,7 @@ type Project struct {
 	CloseNote     string   `json:"closeNote"`
 	CreatedAt     string   `json:"createdAt"`
 	UpdatedAt     string   `json:"updatedAt"`
+	OwnerIdentity string   `json:"ownerIdentity"`
 }
 
 // SpaceAllocation 空间占用
@@ -104,30 +106,32 @@ type SpaceAllocation struct {
 
 // BorrowRecord 设备交接单
 type BorrowRecord struct {
-	ID            string   `json:"id"`
-	EquipmentID   string   `json:"equipmentId"`
-	EquipmentName string   `json:"equipmentName"`
-	ProjectID     string   `json:"projectId"`
-	Borrower      string   `json:"borrower"`
-	Purpose       string   `json:"purpose"`
-	PurposeHash   string   `json:"purposeHash"`
-	DueDate       string   `json:"dueDate"`
-	Status        string   `json:"status"`
-	Reviewer      string   `json:"reviewer"`
-	ReviewedAt    string   `json:"reviewedAt"`
-	ReviewNote    string   `json:"reviewNote"`
-	PickupBy      string   `json:"pickupBy"`
-	PickupAt      string   `json:"pickupAt"`
-	PickupPhotos  []string `json:"pickupPhotos"`
-	ReturnBy      string   `json:"returnBy"`
-	ReturnAt      string   `json:"returnAt"`
-	ReturnPhotos  []string `json:"returnPhotos"`
-	Condition     string   `json:"condition"`
-	EvidenceHash  string   `json:"evidenceHash"`
-	ExceptionNote string   `json:"exceptionNote"`
-	Overdue       bool     `json:"overdue"`
-	CreatedAt     string   `json:"createdAt"`
-	UpdatedAt     string   `json:"updatedAt"`
+	ID               string   `json:"id"`
+	EquipmentID      string   `json:"equipmentId"`
+	EquipmentName    string   `json:"equipmentName"`
+	ProjectID        string   `json:"projectId"`
+	BorrowerID       string   `json:"borrowerId"`
+	Borrower         string   `json:"borrower"`
+	BorrowerIdentity string   `json:"borrowerIdentity"`
+	Purpose          string   `json:"purpose"`
+	PurposeHash      string   `json:"purposeHash"`
+	DueDate          string   `json:"dueDate"`
+	Status           string   `json:"status"`
+	Reviewer         string   `json:"reviewer"`
+	ReviewedAt       string   `json:"reviewedAt"`
+	ReviewNote       string   `json:"reviewNote"`
+	PickupBy         string   `json:"pickupBy"`
+	PickupAt         string   `json:"pickupAt"`
+	PickupPhotos     []string `json:"pickupPhotos"`
+	ReturnBy         string   `json:"returnBy"`
+	ReturnAt         string   `json:"returnAt"`
+	ReturnPhotos     []string `json:"returnPhotos"`
+	Condition        string   `json:"condition"`
+	EvidenceHash     string   `json:"evidenceHash"`
+	ExceptionNote    string   `json:"exceptionNote"`
+	Overdue          bool     `json:"overdue"`
+	CreatedAt        string   `json:"createdAt"`
+	UpdatedAt        string   `json:"updatedAt"`
 }
 
 // Activity 链上操作流水

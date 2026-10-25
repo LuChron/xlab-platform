@@ -67,7 +67,7 @@ async function doReviewBorrow(approved) {
   try {
     await ledger.reviewBorrow(borrow.value.id, approved, borrowNote.value)
     borrow.value = null
-    window.__xlabToast?.(approved ? '已批准，等待双方确认领取' : '已驳回借用申请')
+    window.__xlabToast?.(approved ? '已批准，等待现场核对领取' : '已驳回借用申请')
   } catch (e) {
     window.__xlabToast?.(e.message, 'err')
   }
@@ -307,7 +307,7 @@ async function doActivate() {
         <h2>已批准 · 待领取交接</h2>
         <span>{{ ledger.approvedBorrows.length }} 条</span>
       </div>
-      <p class="board-lede">双方确认设备与附件后，设备才正式借出。</p>
+      <p class="board-lede">管理方核对设备与附件并记录后，设备才正式借出。</p>
 
       <table class="book" v-if="ledger.approvedBorrows.length">
         <thead>
@@ -458,7 +458,7 @@ async function doActivate() {
     <AppModal v-if="pickup" title="领取交接确认" :subtitle="`${pickup.id} · ${pickup.equipmentName}`" @close="pickup = null">
       <div class="modal-stack">
         <div class="detail-box">
-          <p class="box-label">需双方共同核对</p>
+          <p class="box-label">请核对设备与附件</p>
           <ul class="checklist">
             <li>设备编号与外观状态是否与台账一致</li>
             <li>随附配件是否齐全</li>

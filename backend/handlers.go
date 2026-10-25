@@ -46,14 +46,21 @@ func chainHandler(store Store) gin.HandlerFunc {
 
 func createApplicationHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		if !requireMemberRole(c) {
+			return
+		}
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var in ApplicationInput
 		if err := c.ShouldBindJSON(&in); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求格式不正确"})
 			return
 		}
-		app, err := store.CreateApplication(in)
+		user, _ := currentUser(c)
+		in.LeadID, in.LeadName = user.TeamID, user.SubjectName
+		app, err := requestStore.CreateApplication(in)
 		if err != nil {
 			fail(c, err)
 			return
@@ -69,14 +76,16 @@ type reviewRequest struct {
 
 func reviewApplicationHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var req reviewRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求格式不正确"})
 			return
 		}
-		if err := store.ReviewApplication(c.Param("id"), req.Approved, req.Note); err != nil {
+		if err := requestStore.ReviewApplication(c.Param("id"), req.Approved, req.Note); err != nil {
 			fail(c, err)
 			return
 		}
@@ -90,14 +99,16 @@ type activateRequest struct {
 
 func activateHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var req activateRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求格式不正确"})
 			return
 		}
-		proj, err := store.ActivateProject(c.Param("id"), req.SpaceIDs)
+		proj, err := requestStore.ActivateProject(c.Param("id"), req.SpaceIDs)
 		if err != nil {
 			fail(c, err)
 			return
@@ -113,14 +124,16 @@ type extendRequest struct {
 
 func extendHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var req extendRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求格式不正确"})
 			return
 		}
-		if err := store.ExtendProject(c.Param("id"), req.NewEndDate, req.Note); err != nil {
+		if err := requestStore.ExtendProject(c.Param("id"), req.NewEndDate, req.Note); err != nil {
 			fail(c, err)
 			return
 		}
@@ -134,11 +147,13 @@ type noteRequest struct {
 
 func closeHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var req noteRequest
 		_ = c.ShouldBindJSON(&req)
-		if err := store.CloseProject(c.Param("id"), req.Note); err != nil {
+		if err := requestStore.CloseProject(c.Param("id"), req.Note); err != nil {
 			fail(c, err)
 			return
 		}
@@ -148,14 +163,23 @@ func closeHandler(store Store) gin.HandlerFunc {
 
 func milestoneHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		if !requireMemberRole(c) {
+			return
+		}
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
+		user, _ := currentUser(c)
+		if !requireProjectOwner(c, requestStore, c.Param("id"), user.TeamID) {
+			return
+		}
 		var req noteRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求格式不正确"})
 			return
 		}
-		if err := store.SubmitMilestone(c.Param("id"), req.Note); err != nil {
+		if err := requestStore.SubmitMilestone(c.Param("id"), req.Note); err != nil {
 			fail(c, err)
 			return
 		}
@@ -167,14 +191,24 @@ func milestoneHandler(store Store) gin.HandlerFunc {
 
 func createBorrowHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		if !requireMemberRole(c) {
+			return
+		}
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var in BorrowInput
 		if err := c.ShouldBindJSON(&in); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求格式不正确"})
 			return
 		}
-		rec, err := store.RequestBorrow(in)
+		user, _ := currentUser(c)
+		if !requireProjectOwner(c, requestStore, in.ProjectID, user.TeamID) {
+			return
+		}
+		in.BorrowerID, in.Borrower = user.TeamID, user.SubjectName
+		rec, err := requestStore.RequestBorrow(in)
 		if err != nil {
 			fail(c, err)
 			return
@@ -185,14 +219,16 @@ func createBorrowHandler(store Store) gin.HandlerFunc {
 
 func reviewBorrowHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var req reviewRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求格式不正确"})
 			return
 		}
-		if err := store.ReviewBorrow(c.Param("id"), req.Approved, req.Note); err != nil {
+		if err := requestStore.ReviewBorrow(c.Param("id"), req.Approved, req.Note); err != nil {
 			fail(c, err)
 			return
 		}
@@ -207,8 +243,10 @@ type pickupRequest struct {
 
 func pickupHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var req pickupRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求格式不正确"})
@@ -217,7 +255,7 @@ func pickupHandler(store Store) gin.HandlerFunc {
 		if req.Condition == "" {
 			req.Condition = "GOOD"
 		}
-		if err := store.ConfirmPickup(c.Param("id"), req.Condition, req.Photos); err != nil {
+		if err := requestStore.ConfirmPickup(c.Param("id"), req.Condition, req.Photos); err != nil {
 			fail(c, err)
 			return
 		}
@@ -227,11 +265,20 @@ func pickupHandler(store Store) gin.HandlerFunc {
 
 func returnRequestHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		if !requireMemberRole(c) {
+			return
+		}
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
+		user, _ := currentUser(c)
+		if !requireBorrowOwner(c, requestStore, c.Param("id"), user.TeamID) {
+			return
+		}
 		var req noteRequest
 		_ = c.ShouldBindJSON(&req)
-		if err := store.RequestReturn(c.Param("id"), req.Note); err != nil {
+		if err := requestStore.RequestReturn(c.Param("id"), req.Note); err != nil {
 			fail(c, err)
 			return
 		}
@@ -247,8 +294,10 @@ type returnConfirmRequest struct {
 
 func returnConfirmHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var req returnConfirmRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求格式不正确"})
@@ -257,7 +306,7 @@ func returnConfirmHandler(store Store) gin.HandlerFunc {
 		if req.Condition == "" {
 			req.Condition = "NORMAL"
 		}
-		if err := store.ConfirmReturn(c.Param("id"), req.Condition, req.Note, req.Photos); err != nil {
+		if err := requestStore.ConfirmReturn(c.Param("id"), req.Condition, req.Note, req.Photos); err != nil {
 			fail(c, err)
 			return
 		}
@@ -267,14 +316,69 @@ func returnConfirmHandler(store Store) gin.HandlerFunc {
 
 func resolveHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 按登录用户所属组织签名，链上才能记下真实的调用方
-		store = storeFor(store, c)
+		requestStore, ok := selectRequestStore(c, store)
+		if !ok {
+			return
+		}
 		var req noteRequest
 		_ = c.ShouldBindJSON(&req)
-		if err := store.ResolveException(c.Param("id"), req.Note); err != nil {
+		if err := requestStore.ResolveException(c.Param("id"), req.Note); err != nil {
 			fail(c, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	}
+}
+
+func selectRequestStore(c *gin.Context, base Store) (Store, bool) {
+	store, err := storeFor(base, c)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"code": 503, "message": "当前组织的 Fabric 签名身份不可用：" + err.Error(),
+		})
+		return nil, false
+	}
+	return store, true
+}
+
+func requireProjectOwner(c *gin.Context, store Store, projectID, teamID string) bool {
+	if projectID == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"code": 400, "message": "必须选择所属项目"})
+		return false
+	}
+	ledger, err := store.Ledger()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "无法校验项目归属：" + err.Error()})
+		return false
+	}
+	for _, project := range ledger.Projects {
+		if project.ID == projectID {
+			if project.LeadID != teamID {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": 403, "message": "无权操作其他团队的项目"})
+				return false
+			}
+			return true
+		}
+	}
+	c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"code": 404, "message": "项目不存在"})
+	return false
+}
+
+func requireBorrowOwner(c *gin.Context, store Store, borrowID, teamID string) bool {
+	ledger, err := store.Ledger()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "无法校验借用单归属：" + err.Error()})
+		return false
+	}
+	for _, borrow := range ledger.Borrows {
+		if borrow.ID == borrowID {
+			if borrow.BorrowerID != teamID {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": 403, "message": "无权操作其他团队的借用单"})
+				return false
+			}
+			return true
+		}
+	}
+	c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"code": 404, "message": "借用单不存在"})
+	return false
 }

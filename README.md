@@ -53,7 +53,7 @@
 ./deploy/run.sh fabric
 ```
 
-`up.sh` 会启动 Fabric 测试网络、创建 `xlabchannel`、部署 `xlab` 链码并初始化台账。服务仍运行在 `18088` 端口。
+`up.sh` 会启动 Fabric 测试网络、创建 `xlabchannel`、部署 `xlab` 链码并在首次运行时初始化台账。重复执行会保留现有账本；如果需要清空测试数据，必须显式运行 `./deploy/up.sh reset`。服务仍运行在 `18088` 端口。
 
 停止网络：
 
@@ -106,12 +106,13 @@ Go / Gin API
 
 ## 业务模型
 
-项目入驻流程：
+入驻申请与项目状态：
 
 ```text
-SUBMITTED → APPROVED → ACTIVATED → ACTIVE
-    │                                  ├── EXTENDED
-    └────────────→ REJECTED            └── CLOSED
+Application: SUBMITTED → APPROVED → ACTIVATED
+                 └─────────────→ REJECTED
+Project:                         ACTIVE → CLOSED
+                                    └── 续期后仍为 ACTIVE
 ```
 
 设备借用流程：
@@ -121,15 +122,20 @@ AVAILABLE → REQUESTED → APPROVED → BORROWED
                                       │
                                       ▼
                               RETURN_REQUESTED → RETURNED
-                                      └────────→ EXCEPTION → AVAILABLE
+                                      └────────→ EXCEPTION → RESOLVED
 ```
+
+异常单解决后，关联设备恢复为 `AVAILABLE`。
 
 链码约束：
 
 - 只有 `AVAILABLE` 状态的设备可以发起借用
 - 同一空间的占用时间不能重叠
-- 项目仍有关联设备未归还时不能结项
+- 分配空间的总容量不能低于申请工位数
+- 项目仍有未归还设备或未处理异常单时不能结项
 - 管理操作只接受 `Org1MSP` 身份，团队申请只接受 `Org2MSP` 身份
+- 项目成果、设备借用和归还只能由该项目所属团队发起
+- `InitLedger` 仅允许管理组织首次执行，不会重置已有设备状态
 - 已完成的交接记录不能覆盖修改；更正以新的活动记录追加
 
 ### 链上数据
@@ -143,7 +149,7 @@ AVAILABLE → REQUESTED → APPROVED → BORROWED
 | `BORROW:` | 借用、领取和归还记录 |
 | `ACTIVITY:` | 以 TxID 标识的操作流水 |
 
-链上保存业务主键、状态、摘要哈希、确认人和时间。申请正文、照片与成果文件等体积较大的内容应放在链下存储。
+当前原型在链上保存项目说明、借用用途、业务状态、摘要哈希、操作身份和时间。照片与成果文件尚未接入对象存储，相关字段只用于记录引用或摘要。
 
 ## 目录结构
 

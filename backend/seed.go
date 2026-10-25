@@ -94,6 +94,7 @@ func seedDemo() *Ledger {
 		Status:      "ACTIVATED", Reviewer: "Org1MSP/Admin", ReviewedAt: "2026-10-11T02:15:00Z",
 		ReviewNote: "idea 清晰，空间需求合理，批准入驻。", ProjectID: "PRJ-2026-001",
 		CreatedAt: "2026-10-10T08:30:00Z", UpdatedAt: "2026-10-12T01:00:00Z",
+		OwnerIdentity: "Org2MSP/TeamUser",
 	}
 	l.Applications = append(l.Applications, app)
 
@@ -104,6 +105,7 @@ func seedDemo() *Ledger {
 		StartDate: app.StartDate, EndDate: app.EndDate, Milestone: app.Milestone,
 		MilestoneHash: "c4d8e2f6a1b5c9d3e7f2a6b1c5d9e3f7a2b6c1d5e9f3a7b2c6d1e5f9a3b7c2d6",
 		Extensions:    0, CreatedAt: "2026-10-12T01:00:00Z", UpdatedAt: "2026-10-16T06:20:00Z",
+		OwnerIdentity: "Org2MSP/TeamUser",
 	}
 	l.Projects = append(l.Projects, proj)
 
@@ -115,7 +117,7 @@ func seedDemo() *Ledger {
 	// 一台设备正在借出中，演示“责任关联到项目”
 	rec := BorrowRecord{
 		ID: "BR-2026-001", EquipmentID: "EQ-002", EquipmentName: "Dell U2723QE 显示器",
-		ProjectID: "PRJ-2026-001", Borrower: "林同学",
+		ProjectID: "PRJ-2026-001", BorrowerID: "linxy", Borrower: "林同学", BorrowerIdentity: "Org2MSP/TeamUser",
 		Purpose: "原型开发需要双屏对照调试", PurposeHash: "a1b2c3d4e5f6",
 		DueDate: "2026-11-05", Status: "BORROWED",
 		Reviewer: "Org1MSP/Admin", ReviewedAt: "2026-10-13T02:00:00Z",
@@ -128,7 +130,7 @@ func seedDemo() *Ledger {
 	// 一条已完成的归还，展示闭环
 	rec2 := BorrowRecord{
 		ID: "BR-2026-002", EquipmentID: "EQ-009", EquipmentName: "Arduino 创客套件",
-		ProjectID: "PRJ-2026-001", Borrower: "周同学",
+		ProjectID: "PRJ-2026-001", BorrowerID: "linxy", Borrower: "周同学", BorrowerIdentity: "Org2MSP/TeamUser",
 		Purpose: "传感器选型验证", PurposeHash: "f6e5d4c3b2a1", DueDate: "2026-10-20",
 		Status: "RETURNED", Reviewer: "Org1MSP/Admin", ReviewedAt: "2026-10-14T03:00:00Z",
 		PickupBy: "Org1MSP/Admin", PickupAt: "2026-10-14T03:10:00Z",
@@ -146,13 +148,14 @@ func seedDemo() *Ledger {
 		IdeaHash:    "3e8b1f5a9c2d6e0b4f7a1c5e9d2b6f0a4c8e1d5b9f3a7c2e6d0b4f8a2c6e1d5b",
 		Milestone:   "完成 20 个点位的实地采集与路线验证。", Status: "SUBMITTED",
 		CreatedAt: "2026-10-17T05:00:00Z", UpdatedAt: "2026-10-17T05:00:00Z",
+		OwnerIdentity: "Org2MSP/OtherTeamUser",
 	}
 	l.Applications = append(l.Applications, app2)
 
 	// 一条待审批借用
 	rec3 := BorrowRecord{
 		ID: "BR-2026-003", EquipmentID: "EQ-007", EquipmentName: "便携投影仪",
-		ProjectID: "PRJ-2026-001", Borrower: "沈同学", Purpose: "中期评审现场演示",
+		ProjectID: "PRJ-2026-001", BorrowerID: "linxy", Borrower: "沈同学", BorrowerIdentity: "Org2MSP/TeamUser", Purpose: "中期评审现场演示",
 		PurposeHash: "c9d0e1f2a3b4", DueDate: "2026-11-02", Status: "PENDING",
 		CreatedAt: "2026-10-17T09:30:00Z", UpdatedAt: "2026-10-17T09:30:00Z",
 	}

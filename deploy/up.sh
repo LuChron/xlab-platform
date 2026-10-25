@@ -2,7 +2,8 @@
 # X-Lab 平台一键部署到 Fabric
 #
 # 用法：
-#   ./deploy/up.sh              # 启动网络 + 通道 + 链码 + 初始化账本
+#   ./deploy/up.sh              # 启动或升级，保留现有账本
+#   ./deploy/up.sh reset        # 显式清理网络和账本后重新部署
 #   ./deploy/up.sh current      # 查看当前链码定义与包 ID
 #   ./deploy/up.sh down         # 关闭网络并清理链码容器
 #
@@ -33,6 +34,7 @@ ok()   { printf '\033[32m[XLAB]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[XLAB]\033[0m %s\n' "$*" >&2; exit 1; }
 
 ACTION="${1:-up}"
+RESET=false
 
 org_env() {
   local org="$1"
@@ -74,8 +76,9 @@ case "$ACTION" in
     docker ps -a --format 'table {{.Names}}\t{{.Status}}' | grep -E "xlab|peer0|orderer" || true
     exit 0
     ;;
+  reset) RESET=true ;;
   up) ;;
-  *) fail "未知参数：$ACTION（可用：up | down | current）" ;;
+  *) fail "未知参数：$ACTION（可用：up | reset | down | current）" ;;
 esac
 
 # ============================ 部署流程 ============================
@@ -88,7 +91,11 @@ ok "  镜像构建完成"
 
 info "2/7 启动 Fabric 网络"
 cd "$TEST_NETWORK"
-./network.sh down >/dev/null 2>&1 || true
+if [ "$RESET" = true ]; then
+  info "  已选择 reset：清理现有网络与账本"
+  docker rm -f "$CC_CONTAINER" >/dev/null 2>&1 || true
+  ./network.sh down >/dev/null 2>&1 || true
+fi
 ./network.sh up
 
 info "3/7 创建通道 $CHANNEL"
@@ -159,14 +166,17 @@ docker ps --format '{{.Names}}' | grep -q "^${CC_CONTAINER}$" || fail "链码容
 ok "  链码容器运行中"
 
 info "7/7 初始化账本"
-if peer chaincode invoke -o localhost:7050 --ordererTLSHostnameOverride orderer.example.com \
+if INIT_OUTPUT=$(peer chaincode invoke -o localhost:7050 --ordererTLSHostnameOverride orderer.example.com \
   --tls --cafile "$ORDERER_CA" -C "$CHANNEL" -n "$CC_NAME" \
   --peerAddresses localhost:7051 --tlsRootCertFiles "$ORG1_TLS" \
   --peerAddresses localhost:9051 --tlsRootCertFiles "$ORG2_TLS" \
-  -c '{"function":"InitLedger","Args":[]}' --waitForEvent >/dev/null 2>&1; then
+  -c '{"function":"InitLedger","Args":[]}' --waitForEvent 2>&1); then
   ok "  InitLedger 完成"
+elif grep -Eq "账本已(初始化|存在)" <<<"$INIT_OUTPUT"; then
+  info "  账本已初始化，保留现有数据"
 else
-  info "  InitLedger 可能已执行过，跳过"
+  printf '%s\n' "$INIT_OUTPUT" >&2
+  fail "InitLedger 执行失败"
 fi
 
 echo
