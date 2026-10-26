@@ -84,6 +84,11 @@ function jumpToAvailable() {
 }
 
 function openBorrow(eq) {
+  // 访客未登录时先跳登录，登录后回到本页继续借用（借用人身份只能来自会话，不能伪造）
+  if (!auth.isLoggedIn) {
+    router.push({ path: '/login', query: { redirect: route.fullPath } })
+    return
+  }
   borrowTarget.value = eq
   const d = new Date()
   d.setDate(d.getDate() + 14)

@@ -9,6 +9,7 @@ frontend/.eslintcache
 # Go 二进制
 backend/xlab-backend
 backend/xlab-platform-backend
+backend/backend
 chaincode/bin/
 *.test
 coverage.out

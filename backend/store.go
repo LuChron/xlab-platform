@@ -567,20 +567,25 @@ func (m *memoryStore) ConfirmReturn(id, condition, note string, photos []string)
 		if eq == nil {
 			return fmt.Errorf("设备不存在")
 		}
+		// 先校验输入，再改记录：避免非法验收请求把脏字段写进台账。
+		verdict := strings.ToUpper(condition)
+		switch verdict {
+		case "NORMAL", "DAMAGED", "MISSING":
+		default:
+			return fmt.Errorf("验收结论必须是 NORMAL / DAMAGED / MISSING")
+		}
 		now := nowISO()
-		rec.Condition, rec.ExceptionNote, rec.ReturnAt, rec.ReturnPhotos = condition, note, now, photos
-		rec.EvidenceHash = hashOf(condition, note)
+		rec.Condition, rec.ExceptionNote, rec.ReturnAt, rec.ReturnPhotos = verdict, note, now, photos
+		rec.EvidenceHash = hashOf(verdict, note)
 		rec.UpdatedAt = now
-		switch strings.ToUpper(condition) {
+		switch verdict {
 		case "NORMAL":
 			rec.Status, eq.Status, eq.ProjectID, eq.CurrentBorrow = "RETURNED", "AVAILABLE", "", ""
 		case "DAMAGED", "MISSING":
 			rec.Status, eq.Status, eq.ProjectID, eq.CurrentBorrow = "EXCEPTION", "MAINTENANCE", "", ""
 			eq.Condition = "DAMAGED"
-		default:
-			return fmt.Errorf("验收结论必须是 NORMAL / DAMAGED / MISSING")
 		}
-		m.log("CONFIRM_RETURN", "borrow", id, condition)
+		m.log("CONFIRM_RETURN", "borrow", id, verdict)
 		recomputeStats(m.data)
 		return nil
 	}

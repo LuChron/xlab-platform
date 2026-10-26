@@ -101,6 +101,11 @@ const form = ref({
 })
 
 function openApply() {
+  // 访客未登录时先跳登录，登录后回到本页继续申请（负责人身份只能来自会话，不能伪造）
+  if (!auth.isLoggedIn) {
+    router.push({ path: '/login', query: { redirect: route.fullPath } })
+    return
+  }
   const start = new Date()
   start.setDate(start.getDate() + 3)
   const end = new Date(start)

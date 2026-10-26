@@ -31,7 +31,7 @@ const borrows = computed(() =>
     .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
 )
 const outstanding = computed(() =>
-  borrows.value.filter((b) => ['BORROWED', 'RETURN_REQUESTED', 'APPROVED', 'PENDING'].includes(b.status))
+  borrows.value.filter((b) => ['BORROWED', 'RETURN_REQUESTED', 'APPROVED', 'PENDING', 'EXCEPTION'].includes(b.status))
 )
 
 const remaining = computed(() => {
@@ -277,7 +277,7 @@ async function doReturnRequest(id) {
           <h2>结项检查</h2>
           <dl class="kv">
             <div>
-              <dt>未归还设备</dt>
+              <dt>未结清借用 / 异常</dt>
               <dd :class="{ late: outstanding.length > 0 }">{{ outstanding.length }} 件</dd>
             </div>
             <div>
@@ -350,7 +350,7 @@ async function doReturnRequest(id) {
 
     <AppModal v-if="modal === 'close'" title="结项退出" subtitle="释放全部空间，保留历史记录" @close="modal = ''">
       <div v-if="outstanding.length" class="note-box">
-        当前仍有 <b>{{ outstanding.length }}</b> 件设备未归还，必须先完成全部归还才能结项。
+        当前仍有 <b>{{ outstanding.length }}</b> 件未结清的借用或异常单，必须先全部归还或处理异常才能结项。
       </div>
       <div class="field">
         <label for="close-note">结项说明</label>

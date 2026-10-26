@@ -366,6 +366,15 @@ func (c *XLabContract) UpdateEquipmentStatus(ctx contractapi.TransactionContextI
 	if eq.Status == "BORROWED" {
 		return fmt.Errorf("设备处于借出状态，请先完成归还再调整")
 	}
+	// 维护不得释放仍挂在有效借用链上的设备（REQUESTED/PENDING/APPROVED/异常等），
+	// 否则会允许对同一设备再开第二条借用单，破坏设备独占约束。
+	active, err := c.hasActiveBorrowForEquipment(ctx, id)
+	if err != nil {
+		return err
+	}
+	if active {
+		return fmt.Errorf("设备存在未结清的借用或异常单，请先完成归还与验收再调整")
+	}
 	valid := map[string]bool{"AVAILABLE": true, "MAINTENANCE": true, "RETIRED": true}
 	if !valid[status] {
 		return fmt.Errorf("非法设备状态 %s", status)
@@ -1251,6 +1260,27 @@ func (c *XLabContract) countOutstandingBorrows(ctx contractapi.TransactionContex
 		return nil
 	})
 	return count, err
+}
+
+// hasActiveBorrowForEquipment 判断设备是否存在未结清的借用单（含未处理异常）。
+// 与 countOutstandingBorrows 同一状态集合，保证维护入口与结项检查口径一致。
+func (c *XLabContract) hasActiveBorrowForEquipment(ctx contractapi.TransactionContextInterface, equipmentID string) (bool, error) {
+	active := false
+	err := scanPrefix(ctx, borrowPrefix, func(value []byte) error {
+		var item BorrowRecord
+		if err := json.Unmarshal(value, &item); err != nil {
+			return err
+		}
+		if item.EquipmentID != equipmentID {
+			return nil
+		}
+		switch item.Status {
+		case "BORROWED", "RETURN_REQUESTED", "APPROVED", "PENDING", "EXCEPTION":
+			active = true
+		}
+		return nil
+	})
+	return active, err
 }
 
 func (c *XLabContract) logActivity(ctx contractapi.TransactionContextInterface, action, objectType, objectID, detail string) error {

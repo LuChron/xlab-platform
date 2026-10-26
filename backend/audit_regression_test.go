@@ -169,3 +169,30 @@ func invokeMemberHandler(t *testing.T, handler gin.HandlerFunc, user User, path 
 	handler(ctx)
 	return recorder.Code
 }
+
+// 回归：非法验收结论必须在校验阶段就失败，不能先把 condition/note/returnAt 写进台账。
+func TestMemoryConfirmReturnValidatesBeforeMutating(t *testing.T) {
+	store := newMemoryStoreWithLedger(&Ledger{
+		Equipment: []Equipment{{ID: "EQ-1", Name: "Camera", Status: "RETURN_REQUESTED"}},
+		Borrows: []BorrowRecord{{
+			ID: "BOR-1", EquipmentID: "EQ-1", Status: "RETURN_REQUESTED",
+		}},
+	}, "admin", AdminMSP)
+
+	err := store.ConfirmReturn("BOR-1", "INVALID", "should not save", nil)
+	if err == nil || !strings.Contains(err.Error(), "验收结论") {
+		t.Fatalf("expected invalid condition to be rejected, got %v", err)
+	}
+
+	ledger, err := store.Ledger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := ledger.Borrows[0]
+	if rec.Status != "RETURN_REQUESTED" || rec.Condition != "" || rec.ExceptionNote != "" || rec.ReturnAt != "" {
+		t.Fatalf("failed request mutated borrow record: %#v", rec)
+	}
+	if len(ledger.Activities) != 0 {
+		t.Fatalf("failed request left activity records: %#v", ledger.Activities)
+	}
+}

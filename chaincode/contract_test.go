@@ -215,3 +215,26 @@ func TestGetActivityLogSortsByTimestamp(t *testing.T) {
 		t.Fatalf("expected newest activity first, got %#v", items)
 	}
 }
+
+// 回归：维护入口不得把仍挂在有效借用链（REQUESTED/PENDING）上的设备改回 AVAILABLE，
+// 否则可对同一设备再开第二条借用单，破坏设备独占约束。
+func TestMaintenanceRejectsReleasingEquipmentWithActiveBorrow(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	f.put(t, equipmentPrefix+"EQ-1", Equipment{ID: "EQ-1", Name: "Camera", Status: "REQUESTED", ProjectID: "PRJ-1", CurrentBorrow: "BOR-1"})
+	f.put(t, borrowPrefix+"BOR-1", BorrowRecord{ID: "BOR-1", EquipmentID: "EQ-1", ProjectID: "PRJ-1", Status: "PENDING"})
+
+	err := f.tx(t, func() error {
+		return f.contract.UpdateEquipmentStatus(f.ctx, "EQ-1", "AVAILABLE", "GOOD", "release")
+	})
+	if err == nil || !strings.Contains(err.Error(), "未结清") {
+		t.Fatalf("expected maintenance to reject releasing equipment with active borrow, got %v", err)
+	}
+
+	var eq Equipment
+	if err := json.Unmarshal(f.stub.State[equipmentPrefix+"EQ-1"], &eq); err != nil {
+		t.Fatal(err)
+	}
+	if eq.Status != "REQUESTED" {
+		t.Fatalf("maintenance mutated equipment status to %s despite active borrow", eq.Status)
+	}
+}
