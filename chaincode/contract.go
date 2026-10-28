@@ -586,7 +586,7 @@ func (c *XLabContract) ExtendProject(ctx contractapi.TransactionContextInterface
 	if p.Status != "ACTIVE" {
 		return fmt.Errorf("项目当前状态为 %s，不能续期", p.Status)
 	}
-	start, _, err := parsePeriod(p.StartDate, p.EndDate)
+	_, curEnd, err := parsePeriod(p.StartDate, p.EndDate)
 	if err != nil {
 		return err
 	}
@@ -594,8 +594,8 @@ func (c *XLabContract) ExtendProject(ctx contractapi.TransactionContextInterface
 	if err != nil {
 		return fmt.Errorf("结束日期格式应为 YYYY-MM-DD")
 	}
-	if !newEnd.After(start) {
-		return fmt.Errorf("新结束日期必须晚于开始日期")
+	if !newEnd.After(curEnd) {
+		return fmt.Errorf("新结束日期必须晚于当前期限")
 	}
 	for _, sid := range p.SpaceIDs {
 		conflict, err := c.hasSpaceConflictExcluding(ctx, sid, p.EndDate, newEndDate, projectID)
@@ -612,9 +612,7 @@ func (c *XLabContract) ExtendProject(ctx contractapi.TransactionContextInterface
 	}
 	oldEnd := p.EndDate
 	p.EndDate, p.Extensions, p.UpdatedAt = newEndDate, p.Extensions+1, now
-	if note != "" {
-		p.Milestone = note
-	}
+	// 续期理由只进入流水 detail，不覆盖阶段成果 milestone（milestone 由 SubmitMilestone 单独管理）
 	for _, sid := range p.SpaceIDs {
 		allocID := p.ID + ":" + sid
 		var alloc SpaceAllocation
@@ -809,6 +807,9 @@ func (c *XLabContract) ConfirmEquipmentPickup(ctx contractapi.TransactionContext
 	}
 	if rec.Status != "APPROVED" {
 		return fmt.Errorf("借用单当前状态为 %s，不能确认领取", rec.Status)
+	}
+	if condition != "GOOD" && condition != "FAIR" {
+		return fmt.Errorf("领取成色必须是 GOOD / FAIR")
 	}
 	var eq Equipment
 	if err := getJSON(ctx, equipmentPrefix+rec.EquipmentID, &eq); err != nil {

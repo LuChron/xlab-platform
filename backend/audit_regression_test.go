@@ -196,3 +196,70 @@ func TestMemoryConfirmReturnValidatesBeforeMutating(t *testing.T) {
 		t.Fatalf("failed request left activity records: %#v", ledger.Activities)
 	}
 }
+
+// 回归：续期理由不得覆盖阶段成果 milestone（milestone 由 SubmitMilestone 单独管理）。
+func TestMemoryExtendDoesNotOverwriteMilestone(t *testing.T) {
+	store := newMemoryStoreWithLedger(&Ledger{
+		Projects: []Project{{
+			ID: "PRJ-1", Name: "AR", Status: "ACTIVE",
+			StartDate: "2026-10-01", EndDate: "2026-11-01",
+			Milestone: "完成可操作原型", MilestoneHash: "c4d8f2e6",
+			SpaceIDs: []string{"A1"},
+		}},
+		Spaces: []Space{{ID: "A1", Status: "OPEN", Capacity: 4}},
+	}, "admin", AdminMSP)
+
+	if err := store.ExtendProject("PRJ-1", "2026-12-01", "这是续期理由"); err != nil {
+		t.Fatalf("extend failed: %v", err)
+	}
+
+	ledger, _ := store.Ledger()
+	p := ledger.Projects[0]
+	if p.Milestone != "完成可操作原型" || p.MilestoneHash != "c4d8f2e6" {
+		t.Fatalf("extend overwrote milestone: %q / %q", p.Milestone, p.MilestoneHash)
+	}
+	if p.EndDate != "2026-12-01" {
+		t.Fatalf("extend did not update endDate: %q", p.EndDate)
+	}
+}
+
+// 回归：续期必须晚于当前期限，不能通过"缩期"绕过空间冲突校验。
+func TestMemoryExtendRejectsShrinkingPeriod(t *testing.T) {
+	store := newMemoryStoreWithLedger(&Ledger{
+		Projects: []Project{{
+			ID: "PRJ-1", Name: "AR", Status: "ACTIVE",
+			StartDate: "2026-10-01", EndDate: "2026-11-01",
+			SpaceIDs: []string{"A1"},
+		}},
+		Spaces: []Space{{ID: "A1", Status: "OPEN", Capacity: 4}},
+	}, "admin", AdminMSP)
+
+	err := store.ExtendProject("PRJ-1", "2026-10-15", "缩短")
+	if err == nil || !strings.Contains(err.Error(), "晚于当前期限") {
+		t.Fatalf("expected shrinking period to be rejected, got %v", err)
+	}
+}
+
+// 回归：领取交接必须校验成色枚举（GOOD / FAIR），任意字符串不得入库。
+func TestMemoryConfirmPickupValidatesCondition(t *testing.T) {
+	store := newMemoryStoreWithLedger(&Ledger{
+		Equipment: []Equipment{{ID: "EQ-1", Name: "Camera", Status: "APPROVED"}},
+		Borrows: []BorrowRecord{{
+			ID: "BOR-1", EquipmentID: "EQ-1", Status: "APPROVED",
+		}},
+	}, "admin", AdminMSP)
+
+	err := store.ConfirmPickup("BOR-1", "PRETTY_GOOD", nil)
+	if err == nil || !strings.Contains(err.Error(), "领取成色") {
+		t.Fatalf("expected invalid pickup condition to be rejected, got %v", err)
+	}
+
+	ledger, _ := store.Ledger()
+	rec := ledger.Borrows[0]
+	if rec.Status != "APPROVED" || rec.Condition != "" || rec.PickupAt != "" {
+		t.Fatalf("failed pickup mutated borrow record: %#v", rec)
+	}
+	if ledger.Equipment[0].Status != "APPROVED" {
+		t.Fatalf("failed pickup mutated equipment status: %s", ledger.Equipment[0].Status)
+	}
+}

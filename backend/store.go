@@ -353,8 +353,16 @@ func (m *memoryStore) ExtendProject(projectID, newEndDate, note string) error {
 		if p.Status != "ACTIVE" {
 			return fmt.Errorf("项目当前状态为 %s，不能续期", p.Status)
 		}
-		if _, _, err := parsePeriod(p.StartDate, newEndDate); err != nil {
+		_, curEnd, err := parsePeriod(p.StartDate, p.EndDate)
+		if err != nil {
 			return err
+		}
+		newEnd, err := time.Parse("2006-01-02", newEndDate)
+		if err != nil {
+			return fmt.Errorf("结束日期格式应为 YYYY-MM-DD")
+		}
+		if !newEnd.After(curEnd) {
+			return fmt.Errorf("新结束日期必须晚于当前期限")
 		}
 		for _, sid := range p.SpaceIDs {
 			if m.hasConflict(sid, p.EndDate, newEndDate, projectID) {
@@ -365,9 +373,7 @@ func (m *memoryStore) ExtendProject(projectID, newEndDate, note string) error {
 		p.EndDate = newEndDate
 		p.Extensions++
 		p.UpdatedAt = nowISO()
-		if note != "" {
-			p.Milestone = note
-		}
+		// 续期理由只进入流水，不覆盖阶段成果 milestone（milestone 由 SubmitMilestone 单独管理）
 		for j := range m.data.Allocations {
 			if m.data.Allocations[j].ProjectID == projectID {
 				m.data.Allocations[j].EndDate = newEndDate
@@ -518,6 +524,9 @@ func (m *memoryStore) ConfirmPickup(id, condition string, photos []string) error
 		rec := &m.data.Borrows[i]
 		if rec.Status != "APPROVED" {
 			return fmt.Errorf("借用单当前状态为 %s，不能确认领取", rec.Status)
+		}
+		if condition != "GOOD" && condition != "FAIR" {
+			return fmt.Errorf("领取成色必须是 GOOD / FAIR")
 		}
 		eq := m.findEquipment(rec.EquipmentID)
 		if eq == nil {

@@ -238,3 +238,62 @@ func TestMaintenanceRejectsReleasingEquipmentWithActiveBorrow(t *testing.T) {
 		t.Fatalf("maintenance mutated equipment status to %s despite active borrow", eq.Status)
 	}
 }
+
+// 回归：续期理由不得覆盖阶段成果 milestone。
+func TestExtendDoesNotOverwriteMilestone(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	f.put(t, projectPrefix+"PRJ-1", Project{
+		ID: "PRJ-1", Status: "ACTIVE", StartDate: "2026-10-01", EndDate: "2026-11-01",
+		Milestone: "完成可操作原型", MilestoneHash: "c4d8f2e6", SpaceIDs: []string{"A1"},
+	})
+	f.put(t, spacePrefix+"A1", Space{ID: "A1", Status: "OPEN", Capacity: 4})
+
+	if err := f.tx(t, func() error { return f.contract.ExtendProject(f.ctx, "PRJ-1", "2026-12-01", "这是续期理由") }); err != nil {
+		t.Fatalf("extend failed: %v", err)
+	}
+
+	var p Project
+	if err := json.Unmarshal(f.stub.State[projectPrefix+"PRJ-1"], &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Milestone != "完成可操作原型" || p.MilestoneHash != "c4d8f2e6" {
+		t.Fatalf("extend overwrote milestone: %q / %q", p.Milestone, p.MilestoneHash)
+	}
+	if p.EndDate != "2026-12-01" {
+		t.Fatalf("extend did not update endDate: %q", p.EndDate)
+	}
+}
+
+// 回归：续期必须晚于当前期限，禁止缩期。
+func TestExtendRejectsShrinkingPeriod(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	f.put(t, projectPrefix+"PRJ-1", Project{
+		ID: "PRJ-1", Status: "ACTIVE", StartDate: "2026-10-01", EndDate: "2026-11-01", SpaceIDs: []string{"A1"},
+	})
+	f.put(t, spacePrefix+"A1", Space{ID: "A1", Status: "OPEN", Capacity: 4})
+
+	err := f.tx(t, func() error { return f.contract.ExtendProject(f.ctx, "PRJ-1", "2026-10-15", "缩短") })
+	if err == nil || !strings.Contains(err.Error(), "晚于当前期限") {
+		t.Fatalf("expected shrinking period to be rejected, got %v", err)
+	}
+}
+
+// 回归：领取交接必须校验成色枚举（GOOD / FAIR）。
+func TestPickupValidatesCondition(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	f.put(t, equipmentPrefix+"EQ-1", Equipment{ID: "EQ-1", Name: "Camera", Status: "APPROVED"})
+	f.put(t, borrowPrefix+"BOR-1", BorrowRecord{ID: "BOR-1", EquipmentID: "EQ-1", Status: "APPROVED"})
+
+	err := f.tx(t, func() error { return f.contract.ConfirmEquipmentPickup(f.ctx, "BOR-1", "PRETTY_GOOD", "[]") })
+	if err == nil || !strings.Contains(err.Error(), "领取成色") {
+		t.Fatalf("expected invalid pickup condition to be rejected, got %v", err)
+	}
+
+	var rec BorrowRecord
+	if err := json.Unmarshal(f.stub.State[borrowPrefix+"BOR-1"], &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "APPROVED" || rec.Condition != "" {
+		t.Fatalf("failed pickup mutated borrow record: %#v", rec)
+	}
+}

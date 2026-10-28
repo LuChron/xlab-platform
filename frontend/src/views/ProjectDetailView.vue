@@ -47,17 +47,19 @@ const progress = computed(() => {
   return Math.min(100, Math.round((done / total) * 100))
 })
 
-// 链上历史取活动流水（每条带 action 与 detail），而不是项目状态快照
-const history = computed(() =>
-  ledger.activities
-    .filter((a) => a.objectId === route.params.id)
+// 链上历史取活动流水（每条带 action 与 detail），而不是项目状态快照。
+// 提交申请 / 评审通过两条流水的 objectId 是申请单号（APP-…），需连同项目号一起纳入。
+const history = computed(() => {
+  const ids = new Set([route.params.id, project.value?.applicationId].filter(Boolean))
+  return ledger.activities
+    .filter((a) => ids.has(a.objectId))
     .map((a) => ({
       txId: a.txId,
       title: ACTION_LABEL[a.action] || a.action || '链上记录',
       detail: detailText(a.detail),
       time: fmtTime(a.timestamp),
     }))
-)
+})
 // 续期 / 结项 / 成果
 const modal = ref('')
 const noteText = ref('')
