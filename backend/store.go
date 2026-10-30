@@ -431,6 +431,9 @@ func (m *memoryStore) SubmitMilestone(projectID, milestone string) error {
 		if m.data.Projects[i].Status != "ACTIVE" {
 			return fmt.Errorf("项目当前状态为 %s，不能提交成果", m.data.Projects[i].Status)
 		}
+		if strings.TrimSpace(milestone) == "" {
+			return fmt.Errorf("成果内容不能为空")
+		}
 		m.data.Projects[i].Milestone = milestone
 		m.data.Projects[i].MilestoneHash = hashOf(milestone)
 		m.data.Projects[i].UpdatedAt = nowISO()
@@ -446,8 +449,13 @@ func (m *memoryStore) RequestBorrow(in BorrowInput) (*BorrowRecord, error) {
 	if strings.TrimSpace(in.Borrower) == "" || strings.TrimSpace(in.Purpose) == "" {
 		return nil, fmt.Errorf("借用人与用途不能为空")
 	}
-	if _, err := time.Parse("2006-01-02", in.DueDate); err != nil {
+	due, err := time.Parse("2006-01-02", in.DueDate)
+	if err != nil {
 		return nil, fmt.Errorf("预计归还日期格式应为 YYYY-MM-DD")
+	}
+	today, _ := time.Parse("2006-01-02", time.Now().Format("2006-01-02"))
+	if due.Before(today) {
+		return nil, fmt.Errorf("预计归还日期不能早于今天")
 	}
 	eq := m.findEquipment(in.EquipmentID)
 	if eq == nil {
@@ -465,7 +473,17 @@ func (m *memoryStore) RequestBorrow(in BorrowInput) (*BorrowRecord, error) {
 			if p.Status != "ACTIVE" {
 				return nil, fmt.Errorf("关联项目未处于入驻状态（%s）", p.Status)
 			}
+			if strings.TrimSpace(p.EndDate) != "" {
+				projectEnd, err := time.Parse("2006-01-02", p.EndDate)
+				if err != nil {
+					return nil, fmt.Errorf("关联项目结束日期无效")
+				}
+				if due.After(projectEnd) {
+					return nil, fmt.Errorf("预计归还日期不能晚于项目期限 %s", p.EndDate)
+				}
+			}
 			found = true
+			break
 		}
 	}
 	if !found {

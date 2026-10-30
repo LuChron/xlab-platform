@@ -113,12 +113,19 @@ func (a *AuthService) Logout(token string) {
 	delete(a.sessions, token)
 }
 
-// Resolve 校验 token 并返回会话
+// Resolve 校验 token 并返回会话；每次校验顺带清扫所有过期会话，
+// 避免 12 小时 TTL 之后 sessions map 里的死会话无限累积。
 func (a *AuthService) Resolve(token string) (Session, bool) {
-	a.mu.RLock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	for t, s := range a.sessions {
+		if now.After(s.ExpiresAt) {
+			delete(a.sessions, t)
+		}
+	}
 	sess, ok := a.sessions[token]
-	a.mu.RUnlock()
-	if !ok || time.Now().After(sess.ExpiresAt) {
+	if !ok {
 		return Session{}, false
 	}
 	return sess, true
@@ -190,6 +197,25 @@ func authRequired(auth *AuthService) gin.HandlerFunc {
 		sess, ok := auth.Resolve(bearerToken(c))
 		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "请先登录"})
+			return
+		}
+		c.Set("session", sess)
+		c.Next()
+	}
+}
+
+// optionalAuth 用于既允许访客访问、又需要按身份裁剪数据的只读接口。
+// 没有 token 时按访客处理；带了失效 token 则明确返回 401，避免前端继续保留过期身份。
+func optionalAuth(auth *AuthService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := bearerToken(c)
+		if token == "" {
+			c.Next()
+			return
+		}
+		sess, ok := auth.Resolve(token)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "登录已过期"})
 			return
 		}
 		c.Set("session", sess)

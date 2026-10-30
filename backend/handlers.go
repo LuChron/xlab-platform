@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,12 +17,73 @@ func ledgerHandler(store Store) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
 			return
 		}
+		// 申请正文、负责人和借用人属于业务隐私：访客不返回，团队只返回自己的记录。
+		// 管理方负责评审与交接，保留全量视图。项目与资源台账仍作为公开展示数据。
+		user, loggedIn := currentUser(c)
+		if !loggedIn || user.Role != RoleAdmin {
+			applications := make([]ProjectApplication, 0)
+			borrows := make([]BorrowRecord, 0)
+			if loggedIn && user.Role == RoleMember {
+				for _, app := range l.Applications {
+					if app.LeadID == user.TeamID {
+						applications = append(applications, app)
+					}
+				}
+				for _, borrow := range l.Borrows {
+					if borrow.BorrowerID == user.TeamID {
+						borrows = append(borrows, borrow)
+					}
+				}
+			}
+			l.Applications = applications
+			l.Borrows = borrows
+
+			// 活动流水同样携带业务正文（项目名、借用人等），必须与私有记录
+			// 同一套可见性规则：团队只保留自己单据（含关联项目）的流水与
+			// 台账级全局事件；访客保留公开可核验字段但隐去业务正文。
+			if loggedIn && user.Role == RoleMember {
+				ids := map[string]bool{}
+				for _, app := range l.Applications {
+					if app.LeadID == user.TeamID {
+						ids[app.ID] = true
+					}
+				}
+				for _, p := range l.Projects {
+					if p.LeadID == user.TeamID {
+						ids[p.ID] = true
+					}
+				}
+				for _, borrow := range l.Borrows {
+					if borrow.BorrowerID == user.TeamID {
+						ids[borrow.ID] = true
+					}
+				}
+				activities := make([]Activity, 0, len(l.Activities))
+				for _, a := range l.Activities {
+					if private := a.ObjectType == "application" || a.ObjectType == "borrow" || a.ObjectType == "project"; private && !ids[a.ObjectID] {
+						continue
+					}
+					activities = append(activities, a)
+				}
+				l.Activities = activities
+			} else {
+				activities := make([]Activity, len(l.Activities))
+				for i, a := range l.Activities {
+					a.Detail = ""
+					activities[i] = a
+				}
+				l.Activities = activities
+			}
+		}
 		c.JSON(http.StatusOK, l)
 	}
 }
 
 func historyHandler(store Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !canReadHistory(c, store, c.Param("type"), c.Param("id")) {
+			return
+		}
 		entries, err := store.History(c.Param("type"), c.Param("id"))
 		if err != nil {
 			fail(c, err)
@@ -29,6 +91,65 @@ func historyHandler(store Store) gin.HandlerFunc {
 		}
 		c.JSON(http.StatusOK, entries)
 	}
+}
+
+func canReadHistory(c *gin.Context, store Store, objectType, id string) bool {
+	kind := strings.ToLower(objectType)
+	// application/borrow/project 历史携带业务正文，必须校验归属；
+	// equipment/space/allocation 属公开台账，任何登录用户可读。
+	user, ok := currentUser(c)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "请先登录"})
+		return false
+	}
+	if user.Role == RoleAdmin {
+		return true
+	}
+	if kind != "application" && kind != "borrow" && kind != "project" {
+		return true
+	}
+	if user.Role != RoleMember {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": 403, "message": "无权查看该记录"})
+		return false
+	}
+	ledger, err := store.Ledger()
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"code": 503, "message": "无法校验记录归属：" + err.Error()})
+		return false
+	}
+	if kind == "application" {
+		for _, app := range ledger.Applications {
+			if app.ID == id {
+				if app.LeadID == user.TeamID {
+					return true
+				}
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": 403, "message": "无权查看其他团队的申请历史"})
+				return false
+			}
+		}
+	} else if kind == "project" {
+		for _, project := range ledger.Projects {
+			if project.ID == id {
+				if project.LeadID == user.TeamID {
+					return true
+				}
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": 403, "message": "无权查看其他团队的项目历史"})
+				return false
+			}
+		}
+	} else {
+		for _, borrow := range ledger.Borrows {
+			if borrow.ID == id {
+				if borrow.BorrowerID == user.TeamID {
+					return true
+				}
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": 403, "message": "无权查看其他团队的借用历史"})
+				return false
+			}
+		}
+	}
+	c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"code": 404, "message": "记录不存在"})
+	return false
 }
 
 func chainHandler(store Store) gin.HandlerFunc {

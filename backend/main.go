@@ -62,8 +62,8 @@ func main() {
 		api.POST("/auth/login", loginHandler(auth))
 
 		// 公开只读：首页与链上记录对访客开放（链上数据本就可公开核验）
-		api.GET("/ledger", ledgerHandler(store))
-		api.GET("/history/:type/:id", historyHandler(store))
+		api.GET("/ledger", optionalAuth(auth), ledgerHandler(store))
+		api.GET("/history/:type/:id", authRequired(auth), historyHandler(store))
 		api.GET("/chain", chainHandler(store))
 
 		// 需要登录

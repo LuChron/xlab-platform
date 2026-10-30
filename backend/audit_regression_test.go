@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -261,5 +263,235 @@ func TestMemoryConfirmPickupValidatesCondition(t *testing.T) {
 	}
 	if ledger.Equipment[0].Status != "APPROVED" {
 		t.Fatalf("failed pickup mutated equipment status: %s", ledger.Equipment[0].Status)
+	}
+}
+
+// 回归：公开账本不能泄露申请单和借用人信息；项目团队只能看到本团队记录。
+func TestLedgerHandlerScopesPrivateRecords(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newMemoryStoreWithLedger(&Ledger{
+		Applications: []ProjectApplication{
+			{ID: "APP-A", LeadID: "team-a"},
+			{ID: "APP-B", LeadID: "team-b"},
+		},
+		Borrows: []BorrowRecord{
+			{ID: "BOR-A", BorrowerID: "team-a"},
+			{ID: "BOR-B", BorrowerID: "team-b"},
+		},
+	}, "admin", AdminMSP)
+
+	invoke := func(user *User) Ledger {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/ledger", nil)
+		if user != nil {
+			ctx.Set("session", Session{User: *user})
+		}
+		ledgerHandler(store)(ctx)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("ledger status = %d, want 200", recorder.Code)
+		}
+		var got Ledger
+		if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	visitor := invoke(nil)
+	if len(visitor.Applications) != 0 || len(visitor.Borrows) != 0 {
+		t.Fatalf("visitor received private records: applications=%d borrows=%d", len(visitor.Applications), len(visitor.Borrows))
+	}
+
+	member := invoke(&User{Role: RoleMember, TeamID: "team-a"})
+	if len(member.Applications) != 1 || member.Applications[0].ID != "APP-A" {
+		t.Fatalf("member applications were not scoped: %#v", member.Applications)
+	}
+	if len(member.Borrows) != 1 || member.Borrows[0].ID != "BOR-A" {
+		t.Fatalf("member borrows were not scoped: %#v", member.Borrows)
+	}
+
+	admin := invoke(&User{Role: RoleAdmin})
+	if len(admin.Applications) != 2 || len(admin.Borrows) != 2 {
+		t.Fatalf("admin ledger was unexpectedly filtered: applications=%d borrows=%d", len(admin.Applications), len(admin.Borrows))
+	}
+}
+
+// 回归：链上活动流水必须按身份裁剪。团队只见本团队申请/项目/借用相关记录
+// （外加全局台账事件）；访客不得读取业务正文 detail；管理方保留全量。
+func TestLedgerHandlerScopesActivities(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newMemoryStoreWithLedger(&Ledger{
+		Applications: []ProjectApplication{
+			{ID: "APP-A", LeadID: "team-a"},
+			{ID: "APP-B", LeadID: "team-b"},
+		},
+		Borrows: []BorrowRecord{
+			{ID: "BOR-A", BorrowerID: "team-a"},
+			{ID: "BOR-B", BorrowerID: "team-b"},
+		},
+		Projects: []Project{
+			{ID: "PRJ-A", LeadID: "team-a"},
+			{ID: "PRJ-B", LeadID: "team-b"},
+		},
+		Activities: []Activity{
+			{TxID: "tx-app-a", Action: "SUBMIT_APPLICATION", ObjectType: "application", ObjectID: "APP-A", Detail: "团队A项目名"},
+			{TxID: "tx-app-b", Action: "SUBMIT_APPLICATION", ObjectType: "application", ObjectID: "APP-B", Detail: "团队B项目名"},
+			{TxID: "tx-bor-a", Action: "REQUEST_BORROW", ObjectType: "borrow", ObjectID: "BOR-A", Detail: "EQ-1 → 团队A成员"},
+			{TxID: "tx-bor-b", Action: "REQUEST_BORROW", ObjectType: "borrow", ObjectID: "BOR-B", Detail: "EQ-2 → 团队B成员"},
+			{TxID: "tx-prj-a", Action: "SUBMIT_MILESTONE", ObjectType: "project", ObjectID: "PRJ-A", Detail: "团队A里程碑"},
+			{TxID: "tx-prj-b", Action: "SUBMIT_MILESTONE", ObjectType: "project", ObjectID: "PRJ-B", Detail: "团队B里程碑"},
+			{TxID: "tx-init", Action: "INIT_LEDGER", ObjectType: "ledger", ObjectID: "xlab", Detail: "初始化台账"},
+		},
+	}, "admin", AdminMSP)
+
+	invoke := func(user *User) []Activity {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/ledger", nil)
+		if user != nil {
+			ctx.Set("session", Session{User: *user})
+		}
+		ledgerHandler(store)(ctx)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("ledger status = %d, want 200", recorder.Code)
+		}
+		var got Ledger
+		if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Activities
+	}
+
+	visitor := invoke(nil)
+	if len(visitor) != 7 {
+		t.Fatalf("visitor activity count = %d, want 7 (流水公开可核验)", len(visitor))
+	}
+	for _, a := range visitor {
+		if a.Detail != "" {
+			t.Fatalf("visitor activity leaked detail: %#v", a)
+		}
+	}
+
+	member := invoke(&User{Role: RoleMember, TeamID: "team-a"})
+	if len(member) != 4 {
+		t.Fatalf("member activity count = %d, want 4 (本团队3条+全局1条): %#v", len(member), member)
+	}
+	other := map[string]bool{"APP-B": true, "BOR-B": true, "PRJ-B": true}
+	for _, a := range member {
+		if other[a.ObjectID] {
+			t.Fatalf("member saw other-team activity: %#v", a)
+		}
+	}
+
+	admin := invoke(&User{Role: RoleAdmin})
+	if len(admin) != 7 {
+		t.Fatalf("admin activity count = %d, want 7", len(admin))
+	}
+	for _, a := range admin {
+		if a.Detail == "" {
+			t.Fatalf("admin activity detail unexpectedly redacted: %#v", a)
+		}
+	}
+}
+
+// 回归：预计归还日不能早于当天，也不能晚于关联项目期限。
+func TestMemoryRequestBorrowValidatesDueDateAgainstProject(t *testing.T) {
+	store := newMemoryStoreWithLedger(&Ledger{
+		Projects:  []Project{{ID: "PRJ-1", Status: "ACTIVE", EndDate: "2099-12-31"}},
+		Equipment: []Equipment{{ID: "EQ-1", Name: "Camera", Status: "AVAILABLE"}},
+	}, "member", UserMSP)
+
+	base := BorrowInput{EquipmentID: "EQ-1", ProjectID: "PRJ-1", Borrower: "Team A", Purpose: "shoot"}
+	base.DueDate = "2000-01-01"
+	if _, err := store.RequestBorrow(base); err == nil || !strings.Contains(err.Error(), "不能早于今天") {
+		t.Fatalf("expected past due date to be rejected, got %v", err)
+	}
+
+	store.data.Projects[0].EndDate = "2026-11-01"
+	base.DueDate = "2026-11-02"
+	if _, err := store.RequestBorrow(base); err == nil || !strings.Contains(err.Error(), "项目期限") {
+		t.Fatalf("expected due date after project end to be rejected, got %v", err)
+	}
+}
+
+// 回归：团队不能通过历史接口绕过账本列表过滤，读取其他团队的申请或借用单。
+func TestHistoryHandlerRejectsCrossTeamPrivateRecords(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newMemoryStoreWithLedger(&Ledger{
+		Applications: []ProjectApplication{{ID: "APP-B", LeadID: "team-b"}},
+		Borrows:      []BorrowRecord{{ID: "BOR-B", BorrowerID: "team-b"}},
+	}, "member", UserMSP)
+	member := User{Role: RoleMember, TeamID: "team-a"}
+
+	for _, tc := range []struct {
+		objectType string
+		id         string
+	}{
+		{objectType: "application", id: "APP-B"},
+		{objectType: "borrow", id: "BOR-B"},
+	} {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/history/"+tc.objectType+"/"+tc.id, nil)
+		ctx.Params = []gin.Param{{Key: "type", Value: tc.objectType}, {Key: "id", Value: tc.id}}
+		ctx.Set("session", Session{User: member})
+		historyHandler(store)(ctx)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("cross-team %s history status = %d, want 403", tc.objectType, recorder.Code)
+		}
+	}
+}
+
+// 回归：项目历史不得绕过归属校验。团队只能读自己项目的历史，
+// 其他团队的项目按 403 处理（与申请/借用历史同一规则）。
+func TestHistoryHandlerRejectsCrossTeamProjectHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newMemoryStoreWithLedger(&Ledger{
+		Projects: []Project{{ID: "PRJ-B", LeadID: "team-b"}},
+	}, "member", UserMSP)
+	member := User{Role: RoleMember, TeamID: "team-a"}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/history/project/PRJ-B", nil)
+	ctx.Params = []gin.Param{{Key: "type", Value: "project"}, {Key: "id", Value: "PRJ-B"}}
+	ctx.Set("session", Session{User: member})
+	historyHandler(store)(ctx)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("cross-team project history status = %d, want 403, body: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// 回归：过期的会话必须从内存中移除，避免长期运行时 sessions map 无界增长。
+func TestAuthServiceResolveRemovesExpiredSessions(t *testing.T) {
+	auth := NewAuthService()
+	sess, err := auth.Login("team", "xlab2026")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	auth.mu.Lock()
+	auth.sessions[sess.Token] = Session{Token: sess.Token, ExpiresAt: time.Now().Add(-time.Minute)}
+	auth.sessions["expired-other"] = Session{Token: "expired-other", ExpiresAt: time.Now().Add(-time.Hour)}
+	auth.sessions["alive-other"] = Session{Token: "alive-other", ExpiresAt: time.Now().Add(time.Hour)}
+	auth.mu.Unlock()
+
+	if _, ok := auth.Resolve(sess.Token); ok {
+		t.Fatal("expired session should not resolve")
+	}
+	auth.mu.RLock()
+	_, expiredGone := auth.sessions[sess.Token]
+	_, otherGone := auth.sessions["expired-other"]
+	_, aliveKept := auth.sessions["alive-other"]
+	auth.mu.RUnlock()
+	if expiredGone {
+		t.Fatal("expired session was not removed from memory")
+	}
+	if otherGone {
+		t.Fatal("other expired session was not removed")
+	}
+	if !aliveKept {
+		t.Fatal("live session must be kept")
 	}
 }
