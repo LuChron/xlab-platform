@@ -92,8 +92,9 @@ async function retryLedger() {
 
 watch(
   () => [isLogin.value, auth.isLoggedIn],
-  async ([login, loggedIn]) => {
-    if (!login && ledger.equipment.length === 0 && !ledger.loading) {
+  async ([login]) => {
+    // 登录身份变化后必须重拉账本：访客、项目团队和管理方的数据可见范围不同。
+    if (!login && !ledger.loading) {
       ledger.loading = true
       await ledger.load()
     }

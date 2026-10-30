@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useLedger } from '../lib/store'
+import { useAuth } from '../lib/auth'
 import { useReveal } from '../lib/reveal'
 import { useParallax } from '../lib/parallax'
 import {
@@ -16,6 +17,7 @@ import CatIcon from '../components/CatIcon.vue'
 const route = useRoute()
 const router = useRouter()
 const ledger = useLedger()
+const auth = useAuth()
 
 useReveal()
 useParallax('[data-parallax]')
@@ -33,6 +35,7 @@ const borrows = computed(() =>
 const outstanding = computed(() =>
   borrows.value.filter((b) => ['BORROWED', 'RETURN_REQUESTED', 'APPROVED', 'PENDING', 'EXCEPTION'].includes(b.status))
 )
+const isOwner = computed(() => auth.isMember && project.value?.leadId === auth.user?.teamId)
 
 const remaining = computed(() => {
   if (!project.value) return 0
@@ -64,6 +67,7 @@ const history = computed(() => {
 const modal = ref('')
 const noteText = ref('')
 const newEnd = ref('')
+const modalBusy = ref(false)
 
 function openModal(kind) {
   modal.value = kind
@@ -86,6 +90,8 @@ async function doExtend() {
     requestAnimationFrame(() => document.querySelector('#extend-note')?.focus())
     return
   }
+  if (modalBusy.value) return
+  modalBusy.value = true
   try {
     await ledger.extendProject(project.value.id, newEnd.value, noteText.value)
     modal.value = ''
@@ -93,6 +99,8 @@ async function doExtend() {
     await ledger.load()
   } catch (e) {
     window.__xlabToast?.(e.message, 'err')
+  } finally {
+    modalBusy.value = false
   }
 }
 
@@ -102,6 +110,8 @@ async function doClose() {
     requestAnimationFrame(() => document.querySelector('#close-note')?.focus())
     return
   }
+  if (modalBusy.value) return
+  modalBusy.value = true
   try {
     await ledger.closeProject(project.value.id, noteText.value)
     modal.value = ''
@@ -109,6 +119,8 @@ async function doClose() {
     await ledger.load()
   } catch (e) {
     window.__xlabToast?.(e.message, 'err')
+  } finally {
+    modalBusy.value = false
   }
 }
 
@@ -118,6 +130,8 @@ async function doMilestone() {
     requestAnimationFrame(() => document.querySelector('#milestone-note')?.focus())
     return
   }
+  if (modalBusy.value) return
+  modalBusy.value = true
   try {
     await ledger.submitMilestone(project.value.id, noteText.value)
     modal.value = ''
@@ -125,6 +139,8 @@ async function doMilestone() {
     await ledger.load()
   } catch (e) {
     window.__xlabToast?.(e.message, 'err')
+  } finally {
+    modalBusy.value = false
   }
 }
 
@@ -163,13 +179,13 @@ async function doReturnRequest(id) {
         </ul>
 
         <div class="p-actions">
-          <button class="btn btn-primary btn-sm" @click="openModal('milestone')" :disabled="project.status !== 'ACTIVE'">
+          <button v-if="isOwner" class="btn btn-primary btn-sm" @click="openModal('milestone')" :disabled="project.status !== 'ACTIVE'">
             提交阶段成果
           </button>
-          <button class="btn btn-amber btn-sm" @click="openModal('extend')" :disabled="project.status !== 'ACTIVE'">
+          <button v-if="auth.isAdmin" class="btn btn-amber btn-sm" @click="openModal('extend')" :disabled="project.status !== 'ACTIVE'">
             申请续期
           </button>
-          <button class="btn btn-danger btn-sm" @click="openModal('close')" :disabled="project.status === 'CLOSED'">
+          <button v-if="auth.isAdmin" class="btn btn-danger btn-sm" @click="openModal('close')" :disabled="project.status === 'CLOSED'">
             结项退出
           </button>
         </div>
@@ -264,7 +280,7 @@ async function doReturnRequest(id) {
                 <td class="num nowrap">{{ fmtDate(b.dueDate) }}</td>
                 <td><StatusChip :label="label(BORROW_STATUS, b.status)" :tone="tone(BORROW_STATUS, b.status)" /></td>
                 <td class="cell-act">
-                  <button v-if="b.status === 'BORROWED'" class="act" @click="doReturnRequest(b.id)">发起归还</button>
+                  <button v-if="isOwner && b.status === 'BORROWED'" class="act" @click="doReturnRequest(b.id)">发起归还</button>
                 </td>
               </tr>
             </tbody>
@@ -331,7 +347,7 @@ async function doReturnRequest(id) {
       </div>
       <template #foot>
         <button class="btn btn-ghost" @click="modal = ''">取消</button>
-        <button class="btn btn-primary" @click="doMilestone">提交上链</button>
+        <button class="btn btn-primary" :disabled="modalBusy" @click="doMilestone">提交上链</button>
       </template>
     </AppModal>
 
@@ -346,7 +362,7 @@ async function doReturnRequest(id) {
       </div>
       <template #foot>
         <button class="btn btn-ghost" @click="modal = ''">取消</button>
-        <button class="btn btn-primary" @click="doExtend">确认续期</button>
+        <button class="btn btn-primary" :disabled="modalBusy" @click="doExtend">确认续期</button>
       </template>
     </AppModal>
 
@@ -360,7 +376,7 @@ async function doReturnRequest(id) {
       </div>
       <template #foot>
         <button class="btn btn-ghost" @click="modal = ''">取消</button>
-        <button class="btn btn-danger" :disabled="outstanding.length > 0" @click="doClose">确认结项</button>
+        <button class="btn btn-danger" :disabled="outstanding.length > 0 || modalBusy" @click="doClose">确认结项</button>
       </template>
     </AppModal>
   </div>

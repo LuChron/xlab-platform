@@ -28,8 +28,14 @@ const relatedBorrows = computed(() =>
 )
 
 const currentBorrow = computed(() =>
-  relatedBorrows.value.find((b) => ['BORROWED', 'RETURN_REQUESTED', 'APPROVED', 'PENDING'].includes(b.status))
+  relatedBorrows.value.find((b) => ['BORROWED', 'RETURN_REQUESTED', 'APPROVED', 'PENDING', 'EXCEPTION'].includes(b.status))
 )
+// 设备状态非空闲但账本里查不到在借单：说明借用单明细只对管理方与当事团队可见，
+// 不能显示"当前空闲"造成误导。
+const borrowHidden = computed(() =>
+  !!eq.value && ['BORROWED', 'RETURN_REQUESTED', 'APPROVED', 'PENDING', 'REQUESTED'].includes(eq.value.status) && !currentBorrow.value
+)
+const isAvailable = computed(() => eq.value?.status === 'AVAILABLE')
 const currentProject = computed(() =>
   eq.value?.projectId ? ledger.projectMap[eq.value.projectId] : null
 )
@@ -92,15 +98,15 @@ const dueLeft = computed(() => {
           <li><b>{{ eq.totalBorrows }}</b><span>次累计借出</span></li>
           <li><b>{{ relatedBorrows.filter((b) => b.status === 'RETURNED').length }}</b><span>次已验收归还</span></li>
           <li><b>{{ EQUIPMENT_CONDITION[eq.condition] || eq.condition }}</b><span>当前成色</span></li>
-          <li :class="{ warn: !currentBorrow }">
-            <b>{{ currentBorrow ? '在借' : '空闲' }}</b>
-            <span>{{ currentBorrow ? currentBorrow.borrower : '可提交申请' }}</span>
+          <li :class="{ warn: !isAvailable }">
+            <b>{{ isAvailable ? '空闲' : label(EQUIPMENT_STATUS, eq.status) }}</b>
+            <span>{{ currentBorrow ? currentBorrow.borrower : (isAvailable ? '可提交申请' : '借用明细仅限当事方可见') }}</span>
           </li>
         </ul>
 
         <div class="d-actions">
           <router-link class="d-cta" to="/equipment">
-            {{ currentBorrow ? '这台在借，去看别的' : '去设备目录申请借用' }}
+            {{ isAvailable ? '去设备目录申请借用' : '这台暂不可借，去看别的' }}
           </router-link>
           <router-link class="d-alt" :to="`/chain`">这台设备的链上记录</router-link>
         </div>
@@ -197,6 +203,11 @@ const dueLeft = computed(() => {
               查看所属项目 →
             </router-link>
           </template>
+
+          <div v-else-if="borrowHidden" class="free">
+            <b>借用中</b>
+            <span>设备当前有未结清的借用单，明细仅对管理方与当事团队可见。</span>
+          </div>
 
           <div v-else class="free">
             <b>当前空闲</b>

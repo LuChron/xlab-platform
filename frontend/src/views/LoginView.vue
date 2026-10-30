@@ -1,14 +1,22 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuth } from '../lib/auth'
 import { useLedger } from '../lib/store'
 import { ACTION_LABEL, fmtDate } from '../lib/labels'
 import XLabLogo from '../components/XLabLogo.vue'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuth()
 const ledger = useLedger()
+
+// 只接受站内路径，防 open-redirect：必须以单个 "/" 开头，且不是 "//"。
+function safeRedirect() {
+  const target = String(route.query.redirect || '')
+  if (target.startsWith('/') && !target.startsWith('//')) return target
+  return '/'
+}
 
 const username = ref('admin')
 const password = ref('xlab2026')
@@ -100,7 +108,7 @@ async function submit() {
   submitting.value = true
   try {
     await auth.login(username.value, password.value)
-    router.push('/')
+    router.push(safeRedirect())
   } catch (e) {
     err.value = e.message
   } finally {
@@ -110,7 +118,7 @@ async function submit() {
 
 onMounted(async () => {
   // 已有有效会话则直接进入
-  if (await auth.restore()) router.push('/')
+  if (await auth.restore()) router.push(safeRedirect())
   // 登录页也读一次公开账本：让访客在进来之前就看到链上真实在发生什么
   if (!ledger.activities.length) await ledger.load()
 })

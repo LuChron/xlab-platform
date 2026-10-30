@@ -62,28 +62,38 @@ async function doReview(approved) {
 // 借用审批
 const borrow = ref(null)
 const borrowNote = ref('')
+const borrowBusy = ref(false)
 
 async function doReviewBorrow(approved) {
+  if (borrowBusy.value) return
+  borrowBusy.value = true
   try {
     await ledger.reviewBorrow(borrow.value.id, approved, borrowNote.value)
     borrow.value = null
     window.__xlabToast?.(approved ? '已批准，等待现场核对领取' : '已驳回借用申请')
   } catch (e) {
     window.__xlabToast?.(e.message, 'err')
+  } finally {
+    borrowBusy.value = false
   }
 }
 
 // 领取确认
 const pickup = ref(null)
 const pickupCond = ref('GOOD')
+const pickupBusy = ref(false)
 
 async function doPickup() {
+  if (pickupBusy.value) return
+  pickupBusy.value = true
   try {
     await ledger.confirmPickup(pickup.value.id, pickupCond.value, [])
     pickup.value = null
     window.__xlabToast?.('领取已确认，设备进入借出状态')
   } catch (e) {
     window.__xlabToast?.(e.message, 'err')
+  } finally {
+    pickupBusy.value = false
   }
 }
 
@@ -91,36 +101,48 @@ async function doPickup() {
 const ret = ref(null)
 const retCond = ref('NORMAL')
 const retNote = ref('')
+const retBusy = ref(false)
 
 async function doReturn() {
+  if (retBusy.value) return
+  retBusy.value = true
   try {
     await ledger.confirmReturn(ret.value.id, retCond.value, retNote.value, [])
     ret.value = null
     window.__xlabToast?.(retCond.value === 'NORMAL' ? '验收通过，设备已恢复可借' : '已记录异常，设备转入维护')
   } catch (e) {
     window.__xlabToast?.(e.message, 'err')
+  } finally {
+    retBusy.value = false
   }
 }
 
 // 异常处理
+const resolveBusy = ref(false)
+
 async function doResolve(b) {
+  if (resolveBusy.value) return
+  resolveBusy.value = true
   try {
     await ledger.resolveException(b.id, '异常已处理，设备恢复可用')
     window.__xlabToast?.('异常已处理')
   } catch (e) {
     window.__xlabToast?.(e.message, 'err')
+  } finally {
+    resolveBusy.value = false
   }
 }
 
 // 空间分配
 const allocate = ref(null)
 const chosenSpaces = ref([])
+const activateBusy = ref(false)
 
 function openAllocate(app) {
   allocate.value = app
   chosenSpaces.value = [...(app.preferredSpace || [])].filter((id) => {
     const sp = ledger.spaceMap[id]
-    return sp && sp.status === 'OPEN'
+    return sp && sp.status === 'OPEN' && !spaceConflict(sp, app)
   })
 }
 
@@ -130,10 +152,23 @@ function toggleAlloc(id) {
   else chosenSpaces.value.push(id)
 }
 
-function spaceBlocked(sp) {
-  const alloc = ledger.allocations.find((a) => a.spaceId === sp.id && a.status === 'ACTIVE')
+function periodsOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && aEnd > bStart
+}
+
+function spaceConflict(sp, app = allocate.value) {
+  if (!app) return null
+  const alloc = ledger.allocations.find((a) =>
+    a.spaceId === sp.id &&
+    a.status === 'ACTIVE' &&
+    periodsOverlap(app.startDate, app.endDate, a.startDate, a.endDate)
+  )
   if (!alloc) return null
   return ledger.projectMap[alloc.projectId]?.name || '已占用'
+}
+
+function spaceBlocked(sp) {
+  return spaceConflict(sp)
 }
 
 async function doActivate() {
@@ -141,6 +176,8 @@ async function doActivate() {
     window.__xlabToast?.('请选择至少一个空间', 'err')
     return
   }
+  if (activateBusy.value) return
+  activateBusy.value = true
   try {
     const p = await ledger.activateProject(allocate.value.id, chosenSpaces.value)
     allocate.value = null
@@ -148,6 +185,8 @@ async function doActivate() {
     router.push(`/projects/${p.id}`)
   } catch (e) {
     window.__xlabToast?.(e.message, 'err')
+  } finally {
+    activateBusy.value = false
   }
 }
 </script>
@@ -372,7 +411,7 @@ async function doActivate() {
             <td><strong class="cell-strong">{{ b.equipmentName }}</strong></td>
             <td>{{ b.borrower }}</td>
             <td class="cell-note">{{ b.exceptionNote || '暂无' }}</td>
-            <td class="cell-act"><button class="btn btn-sm btn-amber" @click="doResolve(b)">处理完毕</button></td>
+            <td class="cell-act"><button class="btn btn-sm btn-amber" :disabled="resolveBusy" @click="doResolve(b)">处理完毕</button></td>
           </tr>
         </tbody>
       </table>
@@ -449,8 +488,8 @@ async function doActivate() {
         </div>
       </div>
       <template #foot>
-        <button class="btn btn-danger" @click="doReviewBorrow(false)">驳回</button>
-        <button class="btn btn-primary" @click="doReviewBorrow(true)">批准</button>
+        <button class="btn btn-danger" :disabled="borrowBusy" @click="doReviewBorrow(false)">驳回</button>
+        <button class="btn btn-primary" :disabled="borrowBusy" @click="doReviewBorrow(true)">批准</button>
       </template>
     </AppModal>
 
@@ -475,7 +514,7 @@ async function doActivate() {
       </div>
       <template #foot>
         <button class="btn btn-ghost" @click="pickup = null">取消</button>
-        <button class="btn btn-primary" @click="doPickup">确认已领取</button>
+        <button class="btn btn-primary" :disabled="pickupBusy" @click="doPickup">确认已领取</button>
       </template>
     </AppModal>
 
@@ -500,7 +539,7 @@ async function doActivate() {
       </div>
       <template #foot>
         <button class="btn btn-ghost" @click="ret = null">取消</button>
-        <button class="btn btn-primary" @click="doReturn">提交验收</button>
+        <button class="btn btn-primary" :disabled="retBusy" @click="doReturn">提交验收</button>
       </template>
     </AppModal>
 
@@ -536,7 +575,7 @@ async function doActivate() {
       </div>
       <template #foot>
         <button class="btn btn-ghost" @click="allocate = null">取消</button>
-        <button class="btn btn-primary" @click="doActivate">确认分配并入驻</button>
+        <button class="btn btn-primary" :disabled="activateBusy" @click="doActivate">确认分配并入驻</button>
       </template>
     </AppModal>
   </div>

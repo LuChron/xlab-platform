@@ -122,7 +122,7 @@ async function submitApply() {
     [form.value.leadName.trim(), '请填写项目负责人', '#apply-lead'],
     [Number(form.value.requestedSeats) > 0, '申请工位数必须大于 0', '#apply-seats'],
     [form.value.startDate, '请选择开始日期', '#apply-start'],
-    [form.value.endDate && form.value.endDate >= form.value.startDate, '结束日期不能早于开始日期', '#apply-end'],
+    [form.value.endDate && form.value.endDate > form.value.startDate, '结束日期必须晚于开始日期', '#apply-end'],
     [form.value.ideaSummary.trim(), '请填写项目说明', '#apply-idea'],
   ]
   const invalid = checks.find(([valid]) => !valid)
@@ -317,9 +317,11 @@ const activeSpaceHelp = computed(() => {
           </li>
           <li v-if="!pendingApps.length" class="empty-row">没有待评审申请</li>
         </ul>
-        <router-link v-if="pendingApps.length" to="/console" class="col-link">
+        <!-- pendingApps 对成员只含本团队记录：入口只留给管理方，成员提示等待 -->
+        <router-link v-if="pendingApps.length && auth.isAdmin" to="/console" class="col-link">
           前往管理台评审 →
         </router-link>
+        <p v-else-if="pendingApps.length && auth.isMember" class="col-link is-note">等待资源管理委员会评审</p>
       </section>
     </div>
 
@@ -721,6 +723,11 @@ const activeSpaceHelp = computed(() => {
   font-weight: 600;
   color: var(--blue-deep);
   text-decoration: none;
+}
+
+.col-link.is-note {
+  color: var(--ink-soft, #5a6472);
+  font-weight: 500;
 }
 
 /* 表单 */

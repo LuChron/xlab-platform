@@ -115,7 +115,9 @@ export function fmtDate(s) {
 }
 
 export function toInputDate(value = new Date()) {
-  const date = value instanceof Date ? value : new Date(value)
+  // date-only 字符串（YYYY-MM-DD）按 UTC 零点解析，西半球时区会落到前一天；
+  // 先补上本地零点时刻再换算，与 fmtDate 的处理一致。
+  const date = value instanceof Date ? value : new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(value)) ? `${value}T00:00:00` : value)
   if (Number.isNaN(date.getTime())) return ''
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
   return local.toISOString().slice(0, 10)
@@ -147,6 +149,9 @@ export function whoIs(raw) {
   let s = String(raw)
   // 只认「还没解出来」的那种：序列化身份里必有 CN=，base64 里没有
   if (!/CN=/.test(s)) {
+    // 演示模式的身份串形如 "Org1MSP/Admin"：按 MSP 前缀拆开，不做 base64 猜测
+    const demo = /^(Org\dMSP)\/(.+)$/.exec(s)
+    if (demo) return `${demo[2]} · ${demo[1].replace('MSP', '')}`
     try {
       s = atob(s)
     } catch {

@@ -7,6 +7,19 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 export GOCACHE="$ROOT/.cache/go-build"
 mkdir -p "$GOCACHE"
 
+# 非交互 shell 可能没有加载 ~/.zshrc 里的 PATH，补一次常见工具安装位置。
+if ! command -v go >/dev/null 2>&1 && [ -x /usr/local/go/bin/go ]; then
+  export PATH="/usr/local/go/bin:$PATH"
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  for nodedir in "$HOME"/.nvm/versions/node/*/bin /usr/local/bin; do
+    if [ -x "$nodedir/npm" ]; then
+      export PATH="$nodedir:$PATH"
+      break
+    fi
+  done
+fi
+
 echo "[XLAB] 1/5 检查 Git 补丁格式"
 git -C "$ROOT" diff --check
 

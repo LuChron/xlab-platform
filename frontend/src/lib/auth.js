@@ -8,6 +8,7 @@ export const useAuth = defineStore('auth', {
     user: null,
     loading: false,
     error: '',
+    _restorePromise: null,
   }),
 
   getters: {
@@ -41,9 +42,17 @@ export const useAuth = defineStore('auth', {
       }
     },
 
-    // 用已保存的 token 恢复会话
+    // 用已保存的 token 恢复会话；并发调用共享同一个请求，避免重复 /auth/me
     async restore() {
       if (!this.token) return false
+      if (this._restorePromise) return this._restorePromise
+      this._restorePromise = this._doRestore().finally(() => {
+        this._restorePromise = null
+      })
+      return this._restorePromise
+    },
+
+    async _doRestore() {
       try {
         const res = await fetch('/api/auth/me', {
           headers: { Authorization: `Bearer ${this.token}` },

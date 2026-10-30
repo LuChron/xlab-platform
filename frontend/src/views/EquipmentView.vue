@@ -7,7 +7,7 @@ import { useReveal } from '../lib/reveal'
 import { usePointerTilt } from '../lib/pointer'
 import { useParallax } from '../lib/parallax'
 import CountUp from '../components/CountUp.vue'
-import { EQUIPMENT_STATUS, label, tone, toInputDate } from '../lib/labels'
+import { BORROW_STATUS, EQUIPMENT_STATUS, fmtDate, label, tone, toInputDate } from '../lib/labels'
 import StatusChip from '../components/StatusChip.vue'
 import AppModal from '../components/AppModal.vue'
 import { scrollElementIntoView } from '../lib/motion'
@@ -67,6 +67,8 @@ const counts = computed(() => {
 const filters = [
   { key: 'ALL', label: '全部' },
   { key: 'AVAILABLE', label: '可借用' },
+  { key: 'REQUESTED', label: '申请中' },
+  { key: 'APPROVED', label: '待领取' },
   { key: 'BORROWED', label: '借用中' },
   { key: 'MAINTENANCE', label: '维护中' },
 ]
@@ -76,11 +78,22 @@ const borrowTarget = ref(null)
 const form = ref({ projectId: '', borrower: '', purpose: '', dueDate: '' })
 const submitting = ref(false)
 const memberProjects = computed(() => ledger.activeProjects.filter((p) => p.leadId === auth.user?.teamId))
+const myActiveBorrows = computed(() =>
+  ledger.borrows
+    .filter((b) => b.borrowerId === auth.user?.teamId && ['PENDING', 'APPROVED', 'BORROWED', 'RETURN_REQUESTED', 'EXCEPTION'].includes(b.status))
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+)
+const selectedProject = computed(() => memberProjects.value.find((p) => p.id === form.value.projectId))
+const returningId = ref('')
 
 // 首屏的主行动：把视线直接带到第一册可借设备上
 function jumpToAvailable() {
   const first = document.querySelector('.rows tbody tr')
   scrollElementIntoView(first, 'center')
+}
+
+function jumpToMyBorrows() {
+  scrollElementIntoView(document.querySelector('#my-borrows'), 'center')
 }
 
 function openBorrow(eq) {
@@ -92,14 +105,21 @@ function openBorrow(eq) {
   borrowTarget.value = eq
   const d = new Date()
   d.setDate(d.getDate() + 14)
+  const project = memberProjects.value[0]
+  const suggestedDue = toInputDate(d)
   form.value = {
-    projectId: memberProjects.value[0]?.id || '',
+    projectId: project?.id || '',
     borrower: auth.user?.subjectName || '',
     purpose: '',
-    dueDate: toInputDate(d),
+    dueDate: project?.endDate && project.endDate < suggestedDue ? project.endDate : suggestedDue,
   }
   showBorrow.value = true
 }
+
+watch(() => form.value.projectId, () => {
+  const endDate = selectedProject.value?.endDate
+  if (endDate && form.value.dueDate > endDate) form.value.dueDate = endDate
+})
 
 async function submitBorrow() {
   if (!form.value.projectId) {
@@ -122,6 +142,11 @@ async function submitBorrow() {
     requestAnimationFrame(() => document.querySelector('#borrow-due')?.focus())
     return
   }
+  if (selectedProject.value?.endDate && form.value.dueDate > selectedProject.value.endDate) {
+    window.__xlabToast?.(`归还日期不能晚于项目期限 ${selectedProject.value.endDate}`, 'err')
+    requestAnimationFrame(() => document.querySelector('#borrow-due')?.focus())
+    return
+  }
   submitting.value = true
   try {
     await ledger.requestBorrow({
@@ -137,6 +162,18 @@ async function submitBorrow() {
     window.__xlabToast?.(e.message, 'err')
   } finally {
     submitting.value = false
+  }
+}
+
+async function requestReturn(borrow) {
+  returningId.value = borrow.id
+  try {
+    await ledger.requestReturn(borrow.id, '设备使用完毕，申请归还验收')
+    window.__xlabToast?.('已发起归还，请将设备交给管理方验收')
+  } catch (e) {
+    window.__xlabToast?.(e.message, 'err')
+  } finally {
+    returningId.value = ''
   }
 }
 </script>
@@ -171,6 +208,7 @@ async function submitBorrow() {
 
         <div class="eq-actions">
           <button class="eq-cta" type="button" @click="jumpToAvailable()">看现在能借什么</button>
+          <button v-if="auth.isMember && myActiveBorrows.length" class="eq-alt eq-alt-button" type="button" @click="jumpToMyBorrows">归还设备</button>
           <router-link class="eq-alt" to="/chain">查看借还记录</router-link>
         </div>
       </div>
@@ -199,6 +237,42 @@ async function submitBorrow() {
         <img src="/media/xlab-official-xr-space.png" alt="学生在 X-Lab 混合现实空间浏览数字内容" width="960" height="640" loading="lazy" />
         <figcaption data-ui>交互设备 · 混合现实空间</figcaption>
       </figure>
+    </section>
+
+    <section v-if="auth.isMember" id="my-borrows" class="my-borrows" data-reveal aria-labelledby="my-borrows-title">
+      <div class="my-borrows-head">
+        <div>
+          <span class="eyebrow">项目负责人工作区</span>
+          <h2 id="my-borrows-title">我的借用</h2>
+        </div>
+        <p>借用中的设备可在这里直接发起归还；提交后由管理方现场验收。</p>
+      </div>
+
+      <div v-if="myActiveBorrows.length" class="my-borrow-list">
+        <article v-for="b in myActiveBorrows" :key="b.id" class="my-borrow-row">
+          <div class="my-borrow-main">
+            <strong>{{ b.equipmentName }}</strong>
+            <span>{{ b.id }} · {{ ledger.projectMap[b.projectId]?.name || b.projectId }}</span>
+          </div>
+          <div class="my-borrow-due">
+            <span>预计归还</span>
+            <b>{{ fmtDate(b.dueDate) }}</b>
+          </div>
+          <StatusChip :label="label(BORROW_STATUS, b.status)" :tone="tone(BORROW_STATUS, b.status)" />
+          <button
+            v-if="b.status === 'BORROWED'"
+            class="return-action"
+            type="button"
+            :disabled="returningId === b.id"
+            @click="requestReturn(b)"
+          >
+            {{ returningId === b.id ? '提交中…' : '发起归还' }}
+          </button>
+          <span v-else-if="b.status === 'RETURN_REQUESTED'" class="return-wait">请带设备到管理方验收</span>
+          <span v-else class="return-wait">{{ b.status === 'EXCEPTION' ? '等待异常处理' : '等待下一步处理' }}</span>
+        </article>
+      </div>
+      <p v-else class="my-borrow-empty">目前没有待处理的设备借用。</p>
     </section>
 
     <!-- 工具条 -->
@@ -264,7 +338,7 @@ async function submitBorrow() {
             <td class="c-num">{{ e.totalBorrows }} 次</td>
             <td class="c-act">
               <StatusChip :label="label(EQUIPMENT_STATUS, e.status)" :tone="tone(EQUIPMENT_STATUS, e.status)" />
-              <button v-if="e.status === 'AVAILABLE'" class="ask" @click.stop="openBorrow(e)">
+              <button v-if="e.status === 'AVAILABLE' && !auth.isAdmin" class="ask" @click.stop="openBorrow(e)">
                 <span>申请借用</span><span class="arw" aria-hidden="true">→</span>
               </button>
               <span v-else-if="e.projectId" class="row-proj">{{ projectOf(e) }}</span>
@@ -300,7 +374,7 @@ async function submitBorrow() {
         </div>
         <div class="field">
           <label for="borrow-due">预计归还日期</label>
-          <input id="borrow-due" v-model="form.dueDate" name="dueDate" type="date" autocomplete="off" required />
+          <input id="borrow-due" v-model="form.dueDate" name="dueDate" type="date" autocomplete="off" :min="toInputDate()" :max="selectedProject?.endDate || undefined" required />
         </div>
         <div class="field span-2">
           <label for="borrow-purpose">使用用途</label>
@@ -407,6 +481,14 @@ async function submitBorrow() {
 
 .eq-alt:hover { color: var(--blue-deep); }
 
+.eq-alt-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font-family: var(--sans);
+  cursor: pointer;
+}
+
 .eq-tally b {
   font-family: var(--serif);
   font-size: 32px;
@@ -500,6 +582,73 @@ async function submitBorrow() {
   color: #fff;
   background: transparent;
 }
+
+/* ---------- 我的借用 / 归还入口 ---------- */
+.my-borrows {
+  margin: 48px 0 0;
+  padding: 28px 30px;
+  border: 1px solid var(--surface-3);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgba(9, 30, 52, 0.06); /* taste-skill-ignore: restrained utility card depth */
+  scroll-margin-top: 96px;
+}
+
+.my-borrows-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 28px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--surface-3);
+}
+
+.my-borrows-head .eyebrow {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--blue-deep);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+}
+
+.my-borrows-head h2 { font-size: 26px; font-weight: 620; color: var(--ink); }
+.my-borrows-head p { max-width: 42ch; color: var(--ink-3); font-size: 14px; line-height: 1.65; }
+
+.my-borrow-list { display: grid; }
+
+.my-borrow-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(120px, 0.3fr) auto minmax(132px, auto);
+  align-items: center;
+  gap: 22px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--surface-3);
+}
+.my-borrow-row:last-child { border-bottom: 0; }
+.my-borrow-main { display: grid; gap: 5px; }
+.my-borrow-main strong { color: var(--ink); font-size: 16px; }
+.my-borrow-main span,
+.my-borrow-due span { color: var(--ink-3); font-size: 13px; }
+.my-borrow-due { display: grid; gap: 4px; }
+.my-borrow-due b { color: var(--ink-2); font-size: 14px; font-weight: 560; }
+
+.return-action {
+  min-height: 40px;
+  padding: 9px 17px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--ink);
+  color: #fff;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.return-action:hover { background: var(--blue); }
+.return-action:disabled { opacity: 0.55; cursor: wait; }
+.return-wait { max-width: 150px; color: var(--ink-3); font-size: 13px; line-height: 1.45; }
+.my-borrow-empty { padding-top: 18px; color: var(--ink-3); font-size: 14px; }
 
 /* ---------- 工具条 ---------- */
 .toolbar {
@@ -739,5 +888,11 @@ async function submitBorrow() {
   .toolbar { flex-wrap: wrap; gap: 10px; }
   .seg { flex-wrap: wrap; gap: 6px; }
   .seg button { padding: 7px 11px; font-size: 14px; }
+  .my-borrows { padding: 22px 20px; }
+  .my-borrows-head { display: grid; gap: 10px; }
+  .my-borrow-row { grid-template-columns: 1fr auto; gap: 12px; }
+  .my-borrow-due { grid-column: 1; }
+  .return-action,
+  .return-wait { grid-column: 2; grid-row: 2; }
 }
 </style>

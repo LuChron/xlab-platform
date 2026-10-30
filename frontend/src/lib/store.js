@@ -10,10 +10,16 @@ async function api(path, options = {}) {
   const body = await res.json().catch(() => ({}))
 
   if (res.status === 401) {
-    // 会话失效：清理本地状态，让路由回到登录页
+    // 会话失效：清理本地状态并回到登录页（带当前路径，登录后接着操作）。
     auth.token = ''
     auth.user = null
     localStorage.removeItem('xlab_token')
+    if (typeof window !== 'undefined') {
+      const here = window.location.pathname + window.location.search
+      if (!window.location.pathname.startsWith('/login')) {
+        window.location.assign(`/login?redirect=${encodeURIComponent(here)}`)
+      }
+    }
     throw new Error(body.message || '登录已过期，请重新登录')
   }
   if (!res.ok) throw new Error(body.message || `请求失败 (${res.status})`)
