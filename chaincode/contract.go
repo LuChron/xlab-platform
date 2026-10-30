@@ -429,6 +429,9 @@ func (c *XLabContract) SubmitProjectApplication(ctx contractapi.TransactionConte
 	if strings.TrimSpace(projectName) == "" || strings.TrimSpace(leadID) == "" {
 		return fmt.Errorf("项目名称与负责人不能为空")
 	}
+	if strings.TrimSpace(leadName) == "" {
+		return fmt.Errorf("负责人姓名不能为空")
+	}
 	var members []string
 	if strings.TrimSpace(membersJSON) != "" {
 		if err := json.Unmarshal([]byte(membersJSON), &members); err != nil {
@@ -684,6 +687,9 @@ func (c *XLabContract) SubmitMilestone(ctx contractapi.TransactionContextInterfa
 	if err := requireOwner(ctx, p.OwnerIdentity); err != nil {
 		return err
 	}
+	if strings.TrimSpace(milestone) == "" {
+		return fmt.Errorf("成果内容不能为空")
+	}
 	now, err := transactionTime(ctx)
 	if err != nil {
 		return err
@@ -712,8 +718,17 @@ func (c *XLabContract) RequestEquipmentBorrow(ctx contractapi.TransactionContext
 	if strings.TrimSpace(borrower) == "" || strings.TrimSpace(purpose) == "" {
 		return fmt.Errorf("借用人与用途不能为空")
 	}
-	if _, err := time.Parse("2006-01-02", dueDate); err != nil {
+	due, err := time.Parse("2006-01-02", dueDate)
+	if err != nil {
 		return fmt.Errorf("预计归还日期格式应为 YYYY-MM-DD")
+	}
+	txTime, err := ctx.GetStub().GetTxTimestamp()
+	if err != nil {
+		return err
+	}
+	today, _ := time.Parse("2006-01-02", txTime.AsTime().Format("2006-01-02"))
+	if due.Before(today) {
+		return fmt.Errorf("预计归还日期不能早于今天")
 	}
 	var eq Equipment
 	if err := getJSON(ctx, equipmentPrefix+equipmentID, &eq); err != nil {
@@ -734,6 +749,13 @@ func (c *XLabContract) RequestEquipmentBorrow(ctx contractapi.TransactionContext
 	}
 	if err := requireOwner(ctx, p.OwnerIdentity); err != nil {
 		return err
+	}
+	projectEnd, err := time.Parse("2006-01-02", p.EndDate)
+	if err != nil {
+		return fmt.Errorf("关联项目结束日期无效")
+	}
+	if due.After(projectEnd) {
+		return fmt.Errorf("预计归还日期不能晚于项目期限 %s", p.EndDate)
 	}
 	now, err := transactionTime(ctx)
 	if err != nil {
@@ -890,17 +912,23 @@ func (c *XLabContract) ConfirmEquipmentReturn(ctx contractapi.TransactionContext
 			return fmt.Errorf("照片列表必须是 JSON 数组")
 		}
 	}
-	rec.Condition, rec.EvidenceHash, rec.ExceptionNote, rec.ReturnAt, rec.ReturnPhotos, rec.UpdatedAt = condition, evidenceHash, note, now, photos, now
+	// 先校验并归一化结论，再写任何字段：与演示模式（store.go 统一 ToUpper）
+	// 口径一致，也避免测试桩（无 MVCC 回滚）把非法结论写进状态。
+	verdict := strings.ToUpper(strings.TrimSpace(condition))
+	switch verdict {
+	case "NORMAL", "DAMAGED", "MISSING":
+	default:
+		return fmt.Errorf("验收结论必须是 NORMAL / DAMAGED / MISSING")
+	}
+	rec.Condition, rec.EvidenceHash, rec.ExceptionNote, rec.ReturnAt, rec.ReturnPhotos, rec.UpdatedAt = verdict, evidenceHash, note, now, photos, now
 	eq.UpdatedAt, eq.UpdatedBy = now, clientID(ctx)
-	switch strings.ToUpper(condition) {
+	switch verdict {
 	case "NORMAL":
 		rec.Status, eq.Status, eq.ProjectID, eq.CurrentBorrow = "RETURNED", "AVAILABLE", "", ""
 	case "DAMAGED", "MISSING":
 		rec.Status, eq.Status = "EXCEPTION", "MAINTENANCE"
 		eq.ProjectID, eq.CurrentBorrow = "", ""
 		eq.Condition = "DAMAGED"
-	default:
-		return fmt.Errorf("验收结论必须是 NORMAL / DAMAGED / MISSING")
 	}
 	if err := putJSON(ctx, borrowPrefix+borrowID, rec); err != nil {
 		return err
@@ -908,7 +936,7 @@ func (c *XLabContract) ConfirmEquipmentReturn(ctx contractapi.TransactionContext
 	if err := putJSON(ctx, equipmentPrefix+rec.EquipmentID, eq); err != nil {
 		return err
 	}
-	return c.logActivity(ctx, "CONFIRM_RETURN", "borrow", borrowID, condition)
+	return c.logActivity(ctx, "CONFIRM_RETURN", "borrow", borrowID, verdict)
 }
 
 // ResolveException 异常处理完毕，设备恢复可借（仅管理方）

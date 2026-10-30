@@ -297,3 +297,71 @@ func TestPickupValidatesCondition(t *testing.T) {
 		t.Fatalf("failed pickup mutated borrow record: %#v", rec)
 	}
 }
+
+// 回归：借用期限必须落在有效的项目周期内，不能提交已经逾期或晚于项目结束日的借用单。
+func TestRequestBorrowValidatesDueDateAgainstProject(t *testing.T) {
+	f := newChaincodeFixture("team-a", UserMSP)
+	f.put(t, projectPrefix+"PRJ-1", Project{
+		ID: "PRJ-1", Status: "ACTIVE", EndDate: "2099-12-31", OwnerIdentity: "team-a",
+	})
+	f.put(t, equipmentPrefix+"EQ-1", Equipment{ID: "EQ-1", Name: "Camera", Status: "AVAILABLE"})
+
+	err := f.tx(t, func() error {
+		return f.contract.RequestEquipmentBorrow(f.ctx, "BOR-PAST", "EQ-1", "PRJ-1", "team-a", "Team A", "shoot", "hash", "2000-01-01")
+	})
+	if err == nil || !strings.Contains(err.Error(), "不能早于今天") {
+		t.Fatalf("expected past due date to be rejected, got %v", err)
+	}
+
+	f.put(t, projectPrefix+"PRJ-1", Project{
+		ID: "PRJ-1", Status: "ACTIVE", EndDate: "2026-11-01", OwnerIdentity: "team-a",
+	})
+	err = f.tx(t, func() error {
+		return f.contract.RequestEquipmentBorrow(f.ctx, "BOR-LATE", "EQ-1", "PRJ-1", "team-a", "Team A", "shoot", "hash", "2026-11-02")
+	})
+	if err == nil || !strings.Contains(err.Error(), "项目期限") {
+		t.Fatalf("expected due date after project end to be rejected, got %v", err)
+	}
+}
+
+// 回归：归还验收必须先校验结论再写状态——MockStub 没有交易回滚，
+// 非法 condition 若先写字段就会污染账本；同时结论必须归一化为大写。
+func TestConfirmReturnValidatesVerdictBeforeMutation(t *testing.T) {
+	f := newChaincodeFixture("admin", AdminMSP)
+	f.put(t, equipmentPrefix+"EQ-1", Equipment{ID: "EQ-1", Name: "Camera", Status: "BORROWED"})
+	f.put(t, borrowPrefix+"BOR-1", BorrowRecord{ID: "BOR-1", EquipmentID: "EQ-1", Status: "RETURN_REQUESTED"})
+
+	err := f.tx(t, func() error {
+		return f.contract.ConfirmEquipmentReturn(f.ctx, "BOR-1", "pretty_good", "hash", "note", "[]")
+	})
+	if err == nil || !strings.Contains(err.Error(), "验收结论") {
+		t.Fatalf("expected invalid return verdict to be rejected, got %v", err)
+	}
+	var rec BorrowRecord
+	if err := json.Unmarshal(f.stub.State[borrowPrefix+"BOR-1"], &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "RETURN_REQUESTED" || rec.Condition != "" || rec.ReturnAt != "" {
+		t.Fatalf("invalid verdict mutated borrow record: %#v", rec)
+	}
+	var eq Equipment
+	if err := json.Unmarshal(f.stub.State[equipmentPrefix+"EQ-1"], &eq); err != nil {
+		t.Fatal(err)
+	}
+	if eq.Status != "BORROWED" {
+		t.Fatalf("invalid verdict mutated equipment: %#v", eq)
+	}
+
+	// 小写合法值必须归一化为大写入库，与演示模式口径一致。
+	if err := f.tx(t, func() error {
+		return f.contract.ConfirmEquipmentReturn(f.ctx, "BOR-1", "normal", "hash", "note", "[]")
+	}); err != nil {
+		t.Fatalf("lowercase 'normal' should be accepted: %v", err)
+	}
+	if err := json.Unmarshal(f.stub.State[borrowPrefix+"BOR-1"], &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "RETURNED" || rec.Condition != "NORMAL" {
+		t.Fatalf("verdict not normalized/recorded: %#v", rec)
+	}
+}
